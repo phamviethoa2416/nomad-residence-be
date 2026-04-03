@@ -3,7 +3,7 @@ package middlewares
 import (
 	"net/http"
 	"nomad-residence-be/config"
-	"nomad-residence-be/pkg/utils"
+	"strconv"
 	"sync"
 	"time"
 
@@ -79,12 +79,12 @@ func RateLimit(cfg config.RateLimitConfig) gin.HandlerFunc {
 		if remaining < 0 {
 			remaining = 0
 		}
-		c.Header("X-RateLimit-Limit", utils.IntToStr(cfg.RequestsPerWindow))
-		c.Header("X-RateLimit-Remaining", utils.IntToStr(remaining))
-		c.Header("X-RateLimit-Reset", utils.IntToStr(int(resetAt.Unix())))
+		c.Header("X-RateLimit-Limit", strconv.Itoa(cfg.RequestsPerWindow))
+		c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
+		c.Header("X-RateLimit-Reset", strconv.Itoa(int(resetAt.Unix())))
 
 		if count > cfg.RequestsPerWindow {
-			c.Header("Retry-After", utils.IntToStr(int(time.Until(resetAt).Seconds())))
+			c.Header("Retry-After", strconv.Itoa(int(time.Until(resetAt).Seconds())))
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, ErrorResponse{
 				Success: false,
 				Message: cfg.Message,
