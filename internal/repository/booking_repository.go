@@ -5,6 +5,7 @@ import (
 	"errors"
 	"nomad-residence-be/internal/domain/dto"
 	"nomad-residence-be/internal/domain/entity"
+	apperrors "nomad-residence-be/pkg/errors"
 	"nomad-residence-be/pkg/utils"
 	"time"
 
@@ -22,7 +23,6 @@ type BookingRepository interface {
 
 	IsAvailable(ctx context.Context, roomID uint, checkin, checkout time.Time, excludeBookingID *uint) (bool, error)
 
-	ExpirePendingBookings(ctx context.Context) (int64, error)
 	LockRoom(ctx context.Context, roomID uint) error
 
 	CancelExpiredPending(ctx context.Context) (int64, error)
@@ -122,18 +122,35 @@ func (r *bookingRepository) FindByGuestPhone(ctx context.Context, phone string) 
 
 func (r *bookingRepository) Create(ctx context.Context, booking *entity.Booking) error {
 	return DB(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		txRepo := &bookingRepository{db: tx}
-
-		if err := txRepo.LockRoom(ctx, booking.RoomID); err != nil {
+		if err := tx.Exec(`SELECT id FROM rooms WHERE id = ? FOR UPDATE`, booking.RoomID).Error; err != nil {
 			return err
 		}
 
-		available, err := txRepo.IsAvailable(ctx, booking.RoomID, booking.CheckinDate, booking.CheckoutDate, nil)
+		now := time.Now()
+		var conflictCount int64
+		err := tx.Model(&entity.Booking{}).
+			Where("room_id = ?", booking.RoomID).
+			Where("(status = ? OR (status = ? AND expires_at > ?))",
+				entity.BookingConfirmed, entity.BookingPending, now).
+			Where("checkin_date < ? AND checkout_date > ?", booking.CheckoutDate, booking.CheckinDate).
+			Count(&conflictCount).Error
 		if err != nil {
 			return err
 		}
-		if !available {
-			return errors.New("room is not available for the selected dates")
+		if conflictCount > 0 {
+			return apperrors.ErrRoomNotAvailable
+		}
+
+		var blockedCount int64
+		err = tx.Model(&entity.BlockedDate{}).
+			Where("room_id = ?", booking.RoomID).
+			Where("date >= ? AND date < ?", booking.CheckinDate, booking.CheckoutDate).
+			Count(&blockedCount).Error
+		if err != nil {
+			return err
+		}
+		if blockedCount > 0 {
+			return apperrors.ErrRoomNotAvailable
 		}
 
 		return tx.Create(booking).Error
@@ -193,19 +210,6 @@ func (r *bookingRepository) IsAvailable(
 	}
 
 	return blockedCount == 0, nil
-}
-
-func (r *bookingRepository) ExpirePendingBookings(ctx context.Context) (int64, error) {
-	now := time.Now()
-	result := DB(ctx, r.db).WithContext(ctx).
-		Model(&entity.Booking{}).
-		Where("status = ? AND expires_at <= ?", entity.BookingPending, now).
-		Updates(map[string]interface{}{
-			"status":        entity.BookingExpired,
-			"canceled_at":   now,
-			"cancel_reason": "Hết hạn tự động",
-		})
-	return result.RowsAffected, result.Error
 }
 
 func (r *bookingRepository) LockRoom(ctx context.Context, roomID uint) error {
