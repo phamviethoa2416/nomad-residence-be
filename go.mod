@@ -16,6 +16,7 @@ require (
 	github.com/gin-contrib/cors v1.7.6 // indirect
 	github.com/gin-contrib/gzip v1.2.5 // indirect
 	github.com/gin-contrib/sse v1.1.0 // indirect
+	github.com/gin-contrib/timeout v1.2.1 // indirect
 	github.com/gin-gonic/gin v1.12.0 // indirect
 	github.com/go-chi/httprate v0.15.0 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
