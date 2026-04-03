@@ -12,6 +12,7 @@ type PaymentRepository interface {
 	FindByID(ctx context.Context, id uint) (*entity.Payment, error)
 	FindByBookingID(ctx context.Context, bookingID uint) ([]entity.Payment, error)
 	FindByQRTransactionID(ctx context.Context, txID string) (*entity.Payment, error)
+	FindPendingByBookingID(ctx context.Context, bookingID uint) (*entity.Payment, error)
 	Create(ctx context.Context, payment *entity.Payment) error
 	Update(ctx context.Context, payment *entity.Payment) error
 	UpdateManyPendingToSuccess(ctx context.Context, bookingID uint, adminNote string) error
