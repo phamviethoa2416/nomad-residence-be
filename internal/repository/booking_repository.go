@@ -24,6 +24,9 @@ type BookingRepository interface {
 
 	ExpirePendingBookings(ctx context.Context) (int64, error)
 	LockRoom(ctx context.Context, roomID uint) error
+
+	CancelExpiredPending(ctx context.Context) (int64, error)
+	MarkCompletedPastCheckout(ctx context.Context) (int64, error)
 }
 
 type bookingRepository struct {
@@ -208,4 +211,27 @@ func (r *bookingRepository) ExpirePendingBookings(ctx context.Context) (int64, e
 func (r *bookingRepository) LockRoom(ctx context.Context, roomID uint) error {
 	return DB(ctx, r.db).WithContext(ctx).
 		Exec(`SELECT id FROM rooms WHERE id = ? FOR UPDATE`, roomID).Error
+}
+
+func (r *bookingRepository) CancelExpiredPending(ctx context.Context) (int64, error) {
+	result := DB(ctx, r.db).WithContext(ctx).
+		Model(&entity.Booking{}).
+		Where("status = ? AND expires_at < ?", entity.BookingPending, time.Now()).
+		Updates(map[string]interface{}{
+			"status":        entity.BookingCanceled,
+			"canceled_at":   time.Now(),
+			"cancel_reason": "Hết thời gian thanh toán",
+		})
+	return result.RowsAffected, result.Error
+}
+
+func (r *bookingRepository) MarkCompletedPastCheckout(ctx context.Context) (int64, error) {
+	now := time.Now().UTC()
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	result := DB(ctx, r.db).WithContext(ctx).
+		Model(&entity.Booking{}).
+		Where("status = ? AND checkout_date < ?", entity.BookingConfirmed, startOfToday).
+		Update("status", entity.BookingCompleted)
+	return result.RowsAffected, result.Error
 }

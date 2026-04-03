@@ -16,3 +16,8 @@ type RateLimitConfig struct {
 	Window            time.Duration
 	Message           string
 }
+
+type SchedulerConfig struct {
+	BookingJobCron          string
+	IcalSyncIntervalMinutes int
+}
