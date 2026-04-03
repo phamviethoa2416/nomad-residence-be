@@ -1,7 +1,7 @@
 package middlewares
 
 import (
-	apperrors "nomad-residence-be/pkg/utils"
+	apperrors "nomad-residence-be/pkg/errors"
 
 	"github.com/gin-gonic/gin"
 )

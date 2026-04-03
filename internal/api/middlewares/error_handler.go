@@ -3,6 +3,7 @@ package middlewares
 import (
 	"errors"
 	"net/http"
+	apperrors "nomad-residence-be/pkg/errors"
 	"nomad-residence-be/pkg/utils"
 
 	"github.com/gin-gonic/gin"
@@ -54,7 +55,7 @@ func handleError(c *gin.Context, err error) {
 		return
 	}
 
-	var appErr *utils.AppError
+	var appErr *apperrors.AppError
 	if errors.As(err, &appErr) {
 		c.JSON(appErr.HTTPStatus, ErrorResponse{
 			Success: false,
