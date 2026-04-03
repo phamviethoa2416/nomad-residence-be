@@ -21,3 +21,21 @@ type SchedulerConfig struct {
 	BookingJobCron          string
 	IcalSyncIntervalMinutes int
 }
+
+type NotificationConfig struct {
+	Email    EmailConfig
+	Telegram TelegramConfig
+}
+
+type EmailConfig struct {
+	Host     string
+	Port     int
+	User     string
+	Password string
+	From     string
+}
+
+type TelegramConfig struct {
+	BotToken string
+	ChatID   string
+}
