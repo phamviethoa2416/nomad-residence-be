@@ -41,6 +41,5 @@ type PricingRule struct {
 
 	BaseModel
 
-	Room Room             `gorm:"foreignKey:RoomID" json:"-"`
-	Days []PricingRuleDay `gorm:"foreignKey:RuleID"`
+	Room Room `gorm:"foreignKey:RoomID" json:"-"`
 }

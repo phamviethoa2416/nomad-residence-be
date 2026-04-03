@@ -13,7 +13,7 @@ type ModifierType = entity.ModifierType
 type CreatePricingRuleRequest struct {
 	RoomID        uint            `json:"room_id"        binding:"required"`
 	Name          *string         `json:"name"           binding:"omitempty,max=255"`
-	RuleType      PricingRuleType `json:"rule_type"      binding:"required,oneof=date_range day_of_week seasonal"`
+	RuleType      PricingRuleType `json:"rule_type"      binding:"required,oneof=date_range day_of_week"`
 	DateFrom      *string         `json:"date_from"      binding:"omitempty,datetime=2006-01-02"`
 	DateTo        *string         `json:"date_to"        binding:"omitempty,datetime=2006-01-02"`
 	DayOfWeek     []int           `json:"day_of_week"    binding:"omitempty,dive,min=0,max=6"`
