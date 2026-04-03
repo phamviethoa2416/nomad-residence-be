@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"fmt"
 	"log/slog"
 	"nomad-residence-be/config"
 
@@ -84,14 +85,8 @@ func (s *Scheduler) Stop() {
 }
 
 func intervalToCron(minutes int) string {
-	switch {
-	case minutes <= 0:
+	if minutes <= 0 || minutes > 59 {
 		return "*/30 * * * *"
-	case minutes <= 15:
-		return "*/15 * * * *"
-	case minutes <= 30:
-		return "*/30 * * * *"
-	default:
-		return "0 * * * *"
 	}
+	return fmt.Sprintf("*/%d * * * *", minutes)
 }
