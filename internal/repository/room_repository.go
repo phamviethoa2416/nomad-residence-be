@@ -48,8 +48,29 @@ func (r *roomRepository) FindAll(ctx context.Context, filter dto.RoomFilterReque
 	if filter.City != "" {
 		db = db.Where("city = ?", filter.City)
 	}
+	if filter.District != "" {
+		db = db.Where("district = ?", filter.District)
+	}
+	if filter.MinPrice != nil {
+		db = db.Where("base_price >= ?", *filter.MinPrice)
+	}
+	if filter.MaxPrice != nil {
+		db = db.Where("base_price <= ?", *filter.MaxPrice)
+	}
 	if filter.MinGuests > 0 {
 		db = db.Where("max_guests >= ?", filter.MinGuests)
+	}
+	if filter.MaxGuests > 0 {
+		db = db.Where("max_guests <= ?", filter.MaxGuests)
+	}
+	if len(filter.Amenities) > 0 {
+		amenitySubQuery := DB(ctx, r.db).WithContext(ctx).
+			Model(&entity.RoomAmenity{}).
+			Select("room_id").
+			Where("amenity_id IN ?", filter.Amenities).
+			Group("room_id").
+			Having("COUNT(DISTINCT amenity_id) = ?", len(filter.Amenities))
+		db = db.Where("id IN (?)", amenitySubQuery)
 	}
 
 	var total int64
@@ -118,10 +139,27 @@ func (r *roomRepository) Update(ctx context.Context, room *entity.Room) error {
 }
 
 func (r *roomRepository) Delete(ctx context.Context, id uint) error {
-	return DB(ctx, r.db).WithContext(ctx).
-		Model(&entity.Room{}).
-		Where("id = ?", id).
-		Update("status", "inactive").Error
+	return DB(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&entity.Room{}).
+			Where("id = ?", id).
+			Update("status", entity.RoomStatusInactive).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Where("id = ?", id).Delete(&entity.Room{}).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Where("room_id = ?", id).Delete(&entity.RoomImage{}).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Where("room_id = ?", id).Delete(&entity.RoomAmenity{}).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
 }
 
 func (r *roomRepository) AddImages(ctx context.Context, images []entity.RoomImage) error {
