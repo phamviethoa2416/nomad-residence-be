@@ -212,13 +212,22 @@ func (s *Service) NotifyAdminBookingConfirmed(ctx context.Context, booking *enti
 }
 
 func formatVND(amount int64) string {
+	negative := amount < 0
+	if negative {
+		amount = -amount
+	}
+
 	s := fmt.Sprintf("%d", amount)
 	result := make([]byte, 0, len(s)+len(s)/3)
-	for i, c := range s {
+	for i := 0; i < len(s); i++ {
 		if i > 0 && (len(s)-i)%3 == 0 {
 			result = append(result, '.')
 		}
-		result = append(result, byte(c))
+		result = append(result, s[i])
+	}
+
+	if negative {
+		return "-" + string(result)
 	}
 	return string(result)
 }
