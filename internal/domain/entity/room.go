@@ -50,7 +50,14 @@ type Room struct {
 	MinNights int `gorm:"default:1;check:min_nights > 0" json:"min_nights"`
 	MaxNights int `gorm:"default:30;check:max_nights >= min_nights" json:"max_nights"`
 
-	SortOrder int `gorm:"default:0;index" json:"sort_order"`
+	CheckinTime  string `gorm:"type:varchar(10);default:'14:00'" json:"checkin_time"`
+	CheckoutTime string `gorm:"type:varchar(10);default:'12:00'" json:"checkout_time"`
+
+	HouseRules         *string `gorm:"type:text" json:"house_rules,omitempty"`
+	CancellationPolicy *string `gorm:"type:text" json:"cancellation_policy,omitempty"`
+
+	Status    RoomStatus `gorm:"type:varchar(20);default:'active';index" json:"status"`
+	SortOrder int        `gorm:"default:0;index" json:"sort_order"`
 
 	Images    []RoomImage   `gorm:"foreignKey:RoomID;constraint:OnDelete:CASCADE" json:"images,omitempty"`
 	Amenities []RoomAmenity `gorm:"foreignKey:RoomID;constraint:OnDelete:CASCADE" json:"amenities,omitempty"`

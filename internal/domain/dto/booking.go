@@ -10,7 +10,7 @@ type CreateBookingRequest struct {
 	RoomID       uint    `json:"room_id"       binding:"required"`
 	GuestName    string  `json:"guest_name"    binding:"required,max=255"`
 	GuestPhone   string  `json:"guest_phone"   binding:"required,max=20"`
-	GuestEmail   string  `json:"guest_email" binding:"omitempty,email.max=255"`
+	GuestEmail   string  `json:"guest_email" binding:"omitempty,email,max=255"`
 	GuestNote    *string `json:"guest_note"`
 	CheckinDate  string  `json:"checkin_date"  binding:"required,datetime=2006-01-02"`
 	CheckoutDate string  `json:"checkout_date" binding:"required,datetime=2006-01-02"`
