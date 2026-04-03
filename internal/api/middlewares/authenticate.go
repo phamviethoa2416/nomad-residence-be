@@ -4,7 +4,7 @@ import (
 	"errors"
 	"nomad-residence-be/internal/domain/entity"
 	"nomad-residence-be/internal/repository"
-	apperrors "nomad-residence-be/pkg/utils"
+	apperrors "nomad-residence-be/pkg/errors"
 	"strings"
 	"time"
 
@@ -29,11 +29,15 @@ type AdminContext struct {
 
 func GenerateToken(admin *entity.Admin, secret string, ttl time.Duration) (string, error) {
 	now := time.Now()
+	var pwdChanged int64
+	if admin.PasswordChangedAt != nil {
+		pwdChanged = admin.PasswordChangedAt.Unix()
+	}
 	claims := AdminClaims{
 		ID:           admin.ID,
 		Email:        admin.Email,
 		Role:         string(admin.Role),
-		PwdChangedAt: admin.UpdatedAt.Unix(),
+		PwdChangedAt: pwdChanged,
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
@@ -117,8 +121,8 @@ func Authenticate(adminRepo repository.AdminRepository, jwtSecret string) gin.Ha
 			return
 		}
 
-		if claims.PwdChangedAt > 0 {
-			if admin.UpdatedAt.Unix() > claims.PwdChangedAt {
+		if claims.PwdChangedAt > 0 && admin.PasswordChangedAt != nil {
+			if admin.PasswordChangedAt.Unix() > claims.PwdChangedAt {
 				abortWithError(c, apperrors.New(
 					401,
 					"TOKEN_REVOKED",

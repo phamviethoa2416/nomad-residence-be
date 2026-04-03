@@ -25,6 +25,7 @@ type Admin struct {
 	FailedLoginAttempts int
 	LockedUntil         *time.Time
 	LastLoginAt         *time.Time
+	PasswordChangedAt   *time.Time
 
 	BaseModel
 }
