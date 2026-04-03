@@ -5,18 +5,18 @@ import (
 	"encoding/json"
 	"nomad-residence-be/internal/domain/dto"
 	"nomad-residence-be/internal/domain/entity"
-	"nomad-residence-be/internal/domain/repository"
+	repository2 "nomad-residence-be/internal/repository"
 	"nomad-residence-be/pkg/utils"
 )
 
 type PricingUsecase struct {
-	roomRepo repository.RoomRepository
-	ruleRepo repository.PricingRuleRepository
+	roomRepo repository2.RoomRepository
+	ruleRepo repository2.PricingRuleRepository
 }
 
 func NewPricingUsecase(
-	roomRepo repository.RoomRepository,
-	ruleRepo repository.PricingRuleRepository,
+	roomRepo repository2.RoomRepository,
+	ruleRepo repository2.PricingRuleRepository,
 ) *PricingUsecase {
 	return &PricingUsecase{
 		roomRepo: roomRepo,
