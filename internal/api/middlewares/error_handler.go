@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 	apperrors "nomad-residence-be/pkg/errors"
-	"nomad-residence-be/pkg/utils"
+	customValidator "nomad-residence-be/pkg/validator"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
@@ -42,7 +42,7 @@ func handleError(c *gin.Context, err error) {
 		fields := make([]ValidationFieldError, 0, len(v))
 		for _, f := range v {
 			fields = append(fields, ValidationFieldError{
-				Field:   utils.ToSnakeCase(f.Field()),
+				Field:   f.Field(),
 				Message: validationMessage(f),
 			})
 		}
@@ -81,32 +81,27 @@ func handleError(c *gin.Context, err error) {
 	})
 }
 
-func abortWithError(c *gin.Context, err error) {
+func AbortWithValidationError(c *gin.Context, err error) {
+	AbortWithError(c, err)
+}
+
+func AbortWithError(c *gin.Context, err error) {
 	_ = c.Error(err)
 	c.Abort()
-
 	handleError(c, err)
 }
 
 func validationMessage(fe validator.FieldError) string {
+	msg := customValidator.Message(fe.Tag())
+
 	switch fe.Tag() {
-	case "required":
-		return "Trường này là bắt buộc"
-	case "email":
-		return "Email không hợp lệ"
 	case "min":
-		return "Giá trị quá nhỏ (tối thiểu " + fe.Param() + ")"
+		return msg + " (tối thiểu " + fe.Param() + ")"
 	case "max":
-		return "Giá trị quá lớn (tối đa " + fe.Param() + ")"
+		return msg + " (tối đa " + fe.Param() + ")"
 	case "oneof":
-		return "Giá trị không hợp lệ, phải là một trong: " + fe.Param()
-	case "datetime":
-		return "Định dạng ngày không hợp lệ (cần: YYYY-MM-DD)"
-	case "url":
-		return "URL không hợp lệ"
-	case "required_if":
-		return "Trường này là bắt buộc trong trường hợp này"
-	default:
-		return "Giá trị không hợp lệ"
+		return msg + ": " + fe.Param()
 	}
+
+	return msg
 }
