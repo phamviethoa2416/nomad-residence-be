@@ -3,8 +3,8 @@ package repository
 import (
 	"context"
 	"errors"
-	"nomad-residence-be/internal/domain/dto"
 	"nomad-residence-be/internal/domain/entity"
+	"nomad-residence-be/internal/domain/filter"
 	apperrors "nomad-residence-be/pkg/errors"
 	"nomad-residence-be/pkg/utils"
 	"time"
@@ -13,7 +13,7 @@ import (
 )
 
 type BookingRepository interface {
-	FindAll(ctx context.Context, filter dto.BookingFilterRequest) ([]entity.Booking, int64, error)
+	FindAll(ctx context.Context, filter filter.BookingFilter) ([]entity.Booking, int64, error)
 	FindByID(ctx context.Context, id uint) (*entity.Booking, error)
 	FindByCode(ctx context.Context, code string) (*entity.Booking, error)
 	FindByGuestPhone(ctx context.Context, phone string) ([]entity.Booking, error)
@@ -37,7 +37,7 @@ func NewBookingRepository(db *gorm.DB) BookingRepository {
 	return &bookingRepository{db: db}
 }
 
-func (r *bookingRepository) FindAll(ctx context.Context, filter dto.BookingFilterRequest) ([]entity.Booking, int64, error) {
+func (r *bookingRepository) FindAll(ctx context.Context, filter filter.BookingFilter) ([]entity.Booking, int64, error) {
 	db := DB(ctx, r.db).WithContext(ctx).Model(&entity.Booking{})
 
 	if filter.Status != "" {

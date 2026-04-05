@@ -3,15 +3,15 @@ package repository
 import (
 	"context"
 	"errors"
-	"nomad-residence-be/internal/domain/dto"
 	"nomad-residence-be/internal/domain/entity"
+	"nomad-residence-be/internal/domain/filter"
 	"nomad-residence-be/pkg/utils"
 
 	"gorm.io/gorm"
 )
 
 type RoomRepository interface {
-	FindAll(ctx context.Context, filter dto.RoomFilterRequest) ([]entity.Room, int64, error)
+	FindAll(ctx context.Context, filter filter.RoomFilter) ([]entity.Room, int64, error)
 	FindByID(ctx context.Context, id uint) (*entity.Room, error)
 	FindBySlug(ctx context.Context, slug string) (*entity.Room, error)
 	Create(ctx context.Context, room *entity.Room) error
@@ -36,7 +36,7 @@ func NewRoomRepository(db *gorm.DB) RoomRepository {
 	return &roomRepository{db: db}
 }
 
-func (r *roomRepository) FindAll(ctx context.Context, filter dto.RoomFilterRequest) ([]entity.Room, int64, error) {
+func (r *roomRepository) FindAll(ctx context.Context, filter filter.RoomFilter) ([]entity.Room, int64, error) {
 	db := DB(ctx, r.db).WithContext(ctx).Model(&entity.Room{})
 
 	if filter.Status != "" {
