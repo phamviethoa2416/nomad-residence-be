@@ -3,7 +3,7 @@ package middlewares
 import (
 	"errors"
 	"nomad-residence-be/internal/domain/entity"
-	"nomad-residence-be/internal/repository"
+	"nomad-residence-be/internal/domain/port"
 	apperrors "nomad-residence-be/pkg/errors"
 	"strings"
 	"time"
@@ -47,11 +47,11 @@ func GenerateToken(admin *entity.Admin, secret string, ttl time.Duration) (strin
 	return token.SignedString([]byte(secret))
 }
 
-func Authenticate(adminRepo repository.AdminRepository, jwtSecret string) gin.HandlerFunc {
+func Authenticate(adminRepo port.AdminRepository, jwtSecret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-			abortWithError(c, apperrors.New(
+			AbortWithError(c, apperrors.New(
 				401,
 				"UNAUTHORIZED",
 				"Vui lòng đăng nhập"),
@@ -61,7 +61,7 @@ func Authenticate(adminRepo repository.AdminRepository, jwtSecret string) gin.Ha
 
 		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 		if tokenStr == "" {
-			abortWithError(c, apperrors.New(
+			AbortWithError(c, apperrors.New(
 				401,
 				"INVALID_TOKEN",
 				"Token không tồn tại"),
@@ -79,13 +79,13 @@ func Authenticate(adminRepo repository.AdminRepository, jwtSecret string) gin.Ha
 
 		if err != nil {
 			if errors.Is(err, jwt.ErrTokenExpired) {
-				abortWithError(c, apperrors.New(
+				AbortWithError(c, apperrors.New(
 					401, "TOKEN_EXPIRED",
 					"Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại"),
 				)
 				return
 			}
-			abortWithError(c, apperrors.New(
+			AbortWithError(c, apperrors.New(
 				401,
 				"INVALID_TOKEN",
 				"Token không hợp lệ, vui lòng đăng nhập lại"),
@@ -94,7 +94,7 @@ func Authenticate(adminRepo repository.AdminRepository, jwtSecret string) gin.Ha
 		}
 
 		if !token.Valid || claims.ID == 0 {
-			abortWithError(c, apperrors.New(
+			AbortWithError(c, apperrors.New(
 				401,
 				"INVALID_TOKEN",
 				"Token không hợp lệ, vui lòng đăng nhập lại"),
@@ -105,7 +105,7 @@ func Authenticate(adminRepo repository.AdminRepository, jwtSecret string) gin.Ha
 		ctx := c.Request.Context()
 		admin, err := adminRepo.FindByID(ctx, claims.ID)
 		if err != nil {
-			abortWithError(c, apperrors.New(
+			AbortWithError(c, apperrors.New(
 				500,
 				"INTERNAL_SERVER_ERROR",
 				"Lỗi server"),
@@ -113,7 +113,7 @@ func Authenticate(adminRepo repository.AdminRepository, jwtSecret string) gin.Ha
 			return
 		}
 		if admin == nil {
-			abortWithError(c, apperrors.New(
+			AbortWithError(c, apperrors.New(
 				401,
 				"INVALID_TOKEN",
 				"Tài khoản không tồn tại"),
@@ -123,7 +123,7 @@ func Authenticate(adminRepo repository.AdminRepository, jwtSecret string) gin.Ha
 
 		if claims.PwdChangedAt > 0 && admin.PasswordChangedAt != nil {
 			if admin.PasswordChangedAt.Unix() > claims.PwdChangedAt {
-				abortWithError(c, apperrors.New(
+				AbortWithError(c, apperrors.New(
 					401,
 					"TOKEN_REVOKED",
 					"Phiên đăng nhập đã bị thu hồi, vui lòng đăng nhập lại"),
