@@ -1,9 +1,9 @@
 package entity
 
 type RoomAmenity struct {
-	RoomID    uint `gorm:"primaryKey"`
-	AmenityID uint `gorm:"primaryKey"`
+	RoomID    uint `json:"room_id"`
+	AmenityID uint `json:"amenity_id"`
 
-	Room    Room    `gorm:"foreignKey:RoomID"`
-	Amenity Amenity `gorm:"foreignKey:AmenityID"`
+	Room    Room    `json:"-"`
+	Amenity Amenity `json:"-"`
 }

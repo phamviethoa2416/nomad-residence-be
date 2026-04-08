@@ -1,10 +1,10 @@
 package entity
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/shopspring/decimal"
-	"gorm.io/datatypes"
 )
 
 type ModifierType string
@@ -22,24 +22,24 @@ const (
 )
 
 type PricingRule struct {
-	ID     uint `gorm:"primaryKey"`
-	RoomID uint `gorm:"not null;index"`
+	ID     uint `json:"id"`
+	RoomID uint `json:"room_id"`
 
-	Name *string
+	Name *string `json:"name,omitempty"`
 
-	RuleType PricingRuleType `gorm:"type:varchar(30);not null;index"`
+	RuleType PricingRuleType `json:"rule_type"`
 
-	DateFrom  *time.Time     `gorm:"type:date;index:idx_date_range"`
-	DateTo    *time.Time     `gorm:"type:date;index:idx_date_range"`
-	DayOfWeek datatypes.JSON `gorm:"column:day_of_week;type:jsonb"      json:"day_of_week"`
+	DateFrom  *time.Time      `json:"date_from,omitempty"`
+	DateTo    *time.Time      `json:"date_to,omitempty"`
+	DayOfWeek json.RawMessage `json:"day_of_week"`
 
-	PriceModifier decimal.Decimal `gorm:"type:decimal(12,0);not null"`
-	ModifierType  ModifierType    `gorm:"type:varchar(10);default:'fixed'"`
+	PriceModifier decimal.Decimal `json:"price_modifier"`
+	ModifierType  ModifierType    `json:"modifier_type"`
 
-	Priority int  `gorm:"default:0"`
-	IsActive bool `gorm:"default:true"`
+	Priority int  `json:"priority"`
+	IsActive bool `json:"is_active"`
 
 	BaseModel
 
-	Room Room `gorm:"foreignKey:RoomID" json:"-"`
+	Room Room `json:"-"`
 }

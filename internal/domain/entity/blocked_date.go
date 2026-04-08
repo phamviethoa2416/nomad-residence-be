@@ -11,15 +11,15 @@ const (
 )
 
 type BlockedDate struct {
-	ID     uint        `gorm:"primaryKey"`
-	RoomID uint        `gorm:"not null;uniqueIndex:idx_room_date_src"`
-	Date   time.Time   `gorm:"type:date;not null;uniqueIndex:idx_room_date_src;index:idx_room_date"`
-	Source BlockSource `gorm:"type:varchar(30);not null;uniqueIndex:idx_room_date_src;index"`
+	ID     uint        `json:"id"`
+	RoomID uint        `json:"room_id"`
+	Date   time.Time   `json:"date"`
+	Source BlockSource `json:"source"`
 
-	SourceRef *string `gorm:"type:varchar(255)"`
-	Reason    *string `gorm:"type:varchar(255)"`
+	SourceRef *string `json:"source_ref,omitempty"`
+	Reason    *string `json:"reason,omitempty"`
 
 	BaseModel
 
-	Room Room `gorm:"foreignKey:RoomID" json:"-"`
+	Room Room `json:"-"`
 }

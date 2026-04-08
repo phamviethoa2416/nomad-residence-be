@@ -10,22 +10,20 @@ const (
 )
 
 type Admin struct {
-	ID uint `gorm:"primaryKey"`
+	ID uint `json:"id"`
 
-	Email string `gorm:"type:varchar(255);uniqueIndex;not null"`
+	Email        string `json:"email"`
+	PasswordHash string `json:"-"`
+	FullName     string `json:"full_name"`
+	Phone        *string
 
-	PasswordHash string `gorm:"type:varchar(255);not null" json:"-"`
+	Role   AdminRole `json:"role"`
+	Status string    `json:"status"`
 
-	FullName string `gorm:"type:varchar(255);not null"`
-	Phone    *string
-
-	Role   AdminRole `gorm:"type:varchar(20);default:'admin'"`
-	Status string    `gorm:"type:varchar(20);default:'active';index"`
-
-	FailedLoginAttempts int
-	LockedUntil         *time.Time
-	LastLoginAt         *time.Time
-	PasswordChangedAt   *time.Time
+	FailedLoginAttempts int        `json:"failed_login_attempts"`
+	LockedUntil         *time.Time `json:"locked_until,omitempty"`
+	LastLoginAt         *time.Time `json:"last_login_at,omitempty"`
+	PasswordChangedAt   *time.Time `json:"password_changed_at,omitempty"`
 
 	BaseModel
 }
