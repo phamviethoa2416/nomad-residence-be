@@ -5,71 +5,54 @@ import (
 	"errors"
 	"nomad-residence-be/internal/domain/entity"
 	"nomad-residence-be/internal/domain/filter"
+	"nomad-residence-be/internal/repository/model"
 	"nomad-residence-be/pkg/utils"
 
 	"gorm.io/gorm"
 )
 
-type RoomRepository interface {
-	FindAll(ctx context.Context, filter filter.RoomFilter) ([]entity.Room, int64, error)
-	FindByID(ctx context.Context, id uint) (*entity.Room, error)
-	FindBySlug(ctx context.Context, slug string) (*entity.Room, error)
-	Create(ctx context.Context, room *entity.Room) error
-	Update(ctx context.Context, room *entity.Room) error
-	Delete(ctx context.Context, id uint) error
-
-	AddImages(ctx context.Context, images []entity.RoomImage) error
-	DeleteImage(ctx context.Context, imageID uint) error
-	ResetPrimaryImages(ctx context.Context, roomID uint) error
-	UpdateImageSortOrder(ctx context.Context, imageID uint, sortOrder int) error
-
-	AddAmenities(ctx context.Context, amenities []entity.RoomAmenity) error
-	DeleteAmenity(ctx context.Context, amenityID uint) error
-	ReplaceAmenities(ctx context.Context, roomID uint, amenities []entity.RoomAmenity) error
-}
-
 type roomRepository struct {
 	db *gorm.DB
 }
 
-func NewRoomRepository(db *gorm.DB) RoomRepository {
+func NewRoomRepository(db *gorm.DB) *roomRepository {
 	return &roomRepository{db: db}
 }
 
-func (r *roomRepository) FindAll(ctx context.Context, filter filter.RoomFilter) ([]entity.Room, int64, error) {
-	db := DB(ctx, r.db).WithContext(ctx).Model(&entity.Room{})
+func (r *roomRepository) FindAll(ctx context.Context, f filter.RoomFilter) ([]entity.Room, int64, error) {
+	db := DB(ctx, r.db).WithContext(ctx).Model(&model.Room{})
 
-	if filter.Status != "" {
-		db = db.Where("status = ?", filter.Status)
+	if f.Status != "" {
+		db = db.Where("status = ?", f.Status)
 	}
-	if filter.RoomType != "" {
-		db = db.Where("room_type = ?", filter.RoomType)
+	if f.RoomType != "" {
+		db = db.Where("room_type = ?", f.RoomType)
 	}
-	if filter.City != "" {
-		db = db.Where("city = ?", filter.City)
+	if f.City != "" {
+		db = db.Where("city = ?", f.City)
 	}
-	if filter.District != "" {
-		db = db.Where("district = ?", filter.District)
+	if f.District != "" {
+		db = db.Where("district = ?", f.District)
 	}
-	if filter.MinPrice != nil {
-		db = db.Where("base_price >= ?", *filter.MinPrice)
+	if f.MinPrice != nil {
+		db = db.Where("base_price >= ?", *f.MinPrice)
 	}
-	if filter.MaxPrice != nil {
-		db = db.Where("base_price <= ?", *filter.MaxPrice)
+	if f.MaxPrice != nil {
+		db = db.Where("base_price <= ?", *f.MaxPrice)
 	}
-	if filter.MinGuests > 0 {
-		db = db.Where("max_guests >= ?", filter.MinGuests)
+	if f.MinGuests > 0 {
+		db = db.Where("max_guests >= ?", f.MinGuests)
 	}
-	if filter.MaxGuests > 0 {
-		db = db.Where("max_guests <= ?", filter.MaxGuests)
+	if f.MaxGuests > 0 {
+		db = db.Where("max_guests <= ?", f.MaxGuests)
 	}
-	if len(filter.Amenities) > 0 {
+	if len(f.Amenities) > 0 {
 		amenitySubQuery := DB(ctx, r.db).WithContext(ctx).
-			Model(&entity.RoomAmenity{}).
+			Model(&model.RoomAmenity{}).
 			Select("room_id").
-			Where("amenity_id IN ?", filter.Amenities).
+			Where("amenity_id IN ?", f.Amenities).
 			Group("room_id").
-			Having("COUNT(DISTINCT amenity_id) = ?", len(filter.Amenities))
+			Having("COUNT(DISTINCT amenity_id) = ?", len(f.Amenities))
 		db = db.Where("id IN (?)", amenitySubQuery)
 	}
 
@@ -78,10 +61,10 @@ func (r *roomRepository) FindAll(ctx context.Context, filter filter.RoomFilter) 
 		return nil, 0, err
 	}
 
-	page, limit := utils.NormalizePage(filter.Page, filter.Limit)
+	page, limit := utils.NormalizePage(f.Page, f.Limit)
 	offset := (page - 1) * limit
 
-	var rooms []entity.Room
+	var rooms []model.Room
 	err := db.
 		Preload("Images", func(db *gorm.DB) *gorm.DB {
 			return db.Where("is_primary = ?", true).Limit(1)
@@ -89,12 +72,15 @@ func (r *roomRepository) FindAll(ctx context.Context, filter filter.RoomFilter) 
 		Order("sort_order ASC, id ASC").
 		Offset(offset).Limit(limit).
 		Find(&rooms).Error
+	if err != nil {
+		return nil, 0, err
+	}
 
-	return rooms, total, err
+	return model.RoomsToDomain(rooms), total, nil
 }
 
 func (r *roomRepository) FindByID(ctx context.Context, id uint) (*entity.Room, error) {
-	var room entity.Room
+	var m model.Room
 	err := DB(ctx, r.db).WithContext(ctx).
 		Preload("Images", func(db *gorm.DB) *gorm.DB {
 			return db.Order("sort_order ASC")
@@ -102,17 +88,18 @@ func (r *roomRepository) FindByID(ctx context.Context, id uint) (*entity.Room, e
 		Preload("Amenities", func(db *gorm.DB) *gorm.DB {
 			return db.Order("category ASC")
 		}).
-		First(&room, id).Error
-
+		First(&m, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-
-	return &room, err
+	if err != nil {
+		return nil, err
+	}
+	return m.ToDomain(), nil
 }
 
 func (r *roomRepository) FindBySlug(ctx context.Context, slug string) (*entity.Room, error) {
-	var room entity.Room
+	var m model.Room
 	err := DB(ctx, r.db).WithContext(ctx).
 		Preload("Images", func(db *gorm.DB) *gorm.DB {
 			return db.Order("is_primary DESC, sort_order ASC")
@@ -121,43 +108,50 @@ func (r *roomRepository) FindBySlug(ctx context.Context, slug string) (*entity.R
 			return db.Order("category ASC")
 		}).
 		Where("slug = ?", slug).
-		First(&room).Error
-
+		First(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-
-	return &room, err
+	if err != nil {
+		return nil, err
+	}
+	return m.ToDomain(), nil
 }
 
 func (r *roomRepository) Create(ctx context.Context, room *entity.Room) error {
-	return DB(ctx, r.db).WithContext(ctx).Create(room).Error
+	m := model.RoomFromDomain(room)
+	if err := DB(ctx, r.db).WithContext(ctx).Create(m).Error; err != nil {
+		return err
+	}
+	*room = *m.ToDomain()
+	return nil
 }
 
 func (r *roomRepository) Update(ctx context.Context, room *entity.Room) error {
-	return DB(ctx, r.db).WithContext(ctx).Save(room).Error
+	m := model.RoomFromDomain(room)
+	if err := DB(ctx, r.db).WithContext(ctx).Save(m).Error; err != nil {
+		return err
+	}
+	*room = *m.ToDomain()
+	return nil
 }
 
 func (r *roomRepository) Delete(ctx context.Context, id uint) error {
 	return DB(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&entity.Room{}).
+		if err := tx.Model(&model.Room{}).
 			Where("id = ?", id).
 			Update("status", entity.RoomStatusInactive).Error; err != nil {
 			return err
 		}
-
-		if err := tx.Where("id = ?", id).Delete(&entity.Room{}).Error; err != nil {
+		if err := tx.Where("id = ?", id).Delete(&model.Room{}).Error; err != nil {
 			return err
 		}
-
-		if err := tx.Where("room_id = ?", id).Delete(&entity.RoomImage{}).Error; err != nil {
+		if err := tx.Where("room_id = ?", id).Delete(&model.RoomImage{}).Error; err != nil {
 			return err
 		}
-
-		if err := tx.Where("room_id = ?", id).Delete(&entity.RoomAmenity{}).Error; err != nil {
+		if err := tx.Where("room_id = ?", id).Delete(&model.RoomAmenity{}).Error; err != nil {
 			return err
 		}
-
 		return nil
 	})
 }
@@ -166,25 +160,24 @@ func (r *roomRepository) AddImages(ctx context.Context, images []entity.RoomImag
 	if len(images) == 0 {
 		return nil
 	}
-
-	return DB(ctx, r.db).WithContext(ctx).Create(&images).Error
+	models := model.RoomImagesFromDomain(images)
+	return DB(ctx, r.db).WithContext(ctx).Create(&models).Error
 }
 
 func (r *roomRepository) DeleteImage(ctx context.Context, imageID uint) error {
-	return DB(ctx, r.db).WithContext(ctx).
-		Delete(&entity.RoomImage{}, imageID).Error
+	return DB(ctx, r.db).WithContext(ctx).Delete(&model.RoomImage{}, imageID).Error
 }
 
 func (r *roomRepository) ResetPrimaryImages(ctx context.Context, roomID uint) error {
 	return DB(ctx, r.db).WithContext(ctx).
-		Model(&entity.RoomImage{}).
+		Model(&model.RoomImage{}).
 		Where("room_id = ?", roomID).
 		Update("is_primary", false).Error
 }
 
 func (r *roomRepository) UpdateImageSortOrder(ctx context.Context, imageID uint, sortOrder int) error {
 	return DB(ctx, r.db).WithContext(ctx).
-		Model(&entity.RoomImage{}).
+		Model(&model.RoomImage{}).
 		Where("id = ?", imageID).
 		Update("sort_order", sortOrder).Error
 }
@@ -193,22 +186,23 @@ func (r *roomRepository) AddAmenities(ctx context.Context, amenities []entity.Ro
 	if len(amenities) == 0 {
 		return nil
 	}
-	return DB(ctx, r.db).WithContext(ctx).Create(&amenities).Error
+	models := model.RoomAmenitiesFromDomain(amenities)
+	return DB(ctx, r.db).WithContext(ctx).Create(&models).Error
 }
 
 func (r *roomRepository) DeleteAmenity(ctx context.Context, amenityID uint) error {
-	return DB(ctx, r.db).WithContext(ctx).
-		Delete(&entity.RoomAmenity{}, amenityID).Error
+	return DB(ctx, r.db).WithContext(ctx).Delete(&model.RoomAmenity{}, amenityID).Error
 }
 
 func (r *roomRepository) ReplaceAmenities(ctx context.Context, roomID uint, amenities []entity.RoomAmenity) error {
 	return DB(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("room_id = ?", roomID).Delete(&entity.RoomAmenity{}).Error; err != nil {
+		if err := tx.Where("room_id = ?", roomID).Delete(&model.RoomAmenity{}).Error; err != nil {
 			return err
 		}
 		if len(amenities) == 0 {
 			return nil
 		}
-		return tx.Create(&amenities).Error
+		models := model.RoomAmenitiesFromDomain(amenities)
+		return tx.Create(&models).Error
 	})
 }

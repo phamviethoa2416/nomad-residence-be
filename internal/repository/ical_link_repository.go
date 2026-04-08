@@ -4,48 +4,45 @@ import (
 	"context"
 	"errors"
 	"nomad-residence-be/internal/domain/entity"
+	"nomad-residence-be/internal/repository/model"
 
 	"gorm.io/gorm"
 )
-
-type IcalLinkRepository interface {
-	FindByRoomID(ctx context.Context, roomID uint) ([]entity.IcalLink, error)
-	FindByID(ctx context.Context, id uint) (*entity.IcalLink, error)
-	FindActiveImportLinks(ctx context.Context) ([]entity.IcalLink, error)
-
-	Create(ctx context.Context, link *entity.IcalLink) error
-	Update(ctx context.Context, link *entity.IcalLink) error
-	Delete(ctx context.Context, id uint) error
-}
 
 type icalLinkRepository struct {
 	db *gorm.DB
 }
 
-func NewIcalLinkRepository(db *gorm.DB) IcalLinkRepository {
+func NewIcalLinkRepository(db *gorm.DB) *icalLinkRepository {
 	return &icalLinkRepository{db: db}
 }
 
 func (r *icalLinkRepository) FindByRoomID(ctx context.Context, roomID uint) ([]entity.IcalLink, error) {
-	var links []entity.IcalLink
+	var links []model.IcalLink
 	err := DB(ctx, r.db).WithContext(ctx).
 		Where("room_id = ?", roomID).
 		Order("created_at ASC").
 		Find(&links).Error
-	return links, err
+	if err != nil {
+		return nil, err
+	}
+	return model.IcalLinksToDomain(links), nil
 }
 
 func (r *icalLinkRepository) FindByID(ctx context.Context, id uint) (*entity.IcalLink, error) {
-	var link entity.IcalLink
-	err := DB(ctx, r.db).WithContext(ctx).First(&link, id).Error
+	var m model.IcalLink
+	err := DB(ctx, r.db).WithContext(ctx).First(&m, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	return &link, err
+	if err != nil {
+		return nil, err
+	}
+	return m.ToDomain(), nil
 }
 
 func (r *icalLinkRepository) FindActiveImportLinks(ctx context.Context) ([]entity.IcalLink, error) {
-	var links []entity.IcalLink
+	var links []model.IcalLink
 	err := DB(ctx, r.db).WithContext(ctx).
 		Where("is_active = ? AND import_url IS NOT NULL", true).
 		Preload("Room", func(db *gorm.DB) *gorm.DB {
@@ -53,17 +50,30 @@ func (r *icalLinkRepository) FindActiveImportLinks(ctx context.Context) ([]entit
 		}).
 		Order("id ASC").
 		Find(&links).Error
-	return links, err
+	if err != nil {
+		return nil, err
+	}
+	return model.IcalLinksToDomain(links), nil
 }
 
 func (r *icalLinkRepository) Create(ctx context.Context, link *entity.IcalLink) error {
-	return DB(ctx, r.db).WithContext(ctx).Create(link).Error
+	m := model.IcalLinkFromDomain(link)
+	if err := DB(ctx, r.db).WithContext(ctx).Create(m).Error; err != nil {
+		return err
+	}
+	*link = *m.ToDomain()
+	return nil
 }
 
 func (r *icalLinkRepository) Update(ctx context.Context, link *entity.IcalLink) error {
-	return DB(ctx, r.db).WithContext(ctx).Save(link).Error
+	m := model.IcalLinkFromDomain(link)
+	if err := DB(ctx, r.db).WithContext(ctx).Save(m).Error; err != nil {
+		return err
+	}
+	*link = *m.ToDomain()
+	return nil
 }
 
 func (r *icalLinkRepository) Delete(ctx context.Context, id uint) error {
-	return DB(ctx, r.db).WithContext(ctx).Delete(&entity.IcalLink{}, id).Error
+	return DB(ctx, r.db).WithContext(ctx).Delete(&model.IcalLink{}, id).Error
 }

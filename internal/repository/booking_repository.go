@@ -5,6 +5,7 @@ import (
 	"errors"
 	"nomad-residence-be/internal/domain/entity"
 	"nomad-residence-be/internal/domain/filter"
+	"nomad-residence-be/internal/repository/model"
 	apperrors "nomad-residence-be/pkg/errors"
 	"nomad-residence-be/pkg/utils"
 	"time"
@@ -12,48 +13,31 @@ import (
 	"gorm.io/gorm"
 )
 
-type BookingRepository interface {
-	FindAll(ctx context.Context, filter filter.BookingFilter) ([]entity.Booking, int64, error)
-	FindByID(ctx context.Context, id uint) (*entity.Booking, error)
-	FindByCode(ctx context.Context, code string) (*entity.Booking, error)
-	FindByGuestPhone(ctx context.Context, phone string) ([]entity.Booking, error)
-
-	Create(ctx context.Context, booking *entity.Booking) error
-	Update(ctx context.Context, booking *entity.Booking) error
-
-	IsAvailable(ctx context.Context, roomID uint, checkin, checkout time.Time, excludeBookingID *uint) (bool, error)
-
-	LockRoom(ctx context.Context, roomID uint) error
-
-	CancelExpiredPending(ctx context.Context) (int64, error)
-	MarkCompletedPastCheckout(ctx context.Context) (int64, error)
-}
-
 type bookingRepository struct {
 	db *gorm.DB
 }
 
-func NewBookingRepository(db *gorm.DB) BookingRepository {
+func NewBookingRepository(db *gorm.DB) *bookingRepository {
 	return &bookingRepository{db: db}
 }
 
-func (r *bookingRepository) FindAll(ctx context.Context, filter filter.BookingFilter) ([]entity.Booking, int64, error) {
-	db := DB(ctx, r.db).WithContext(ctx).Model(&entity.Booking{})
+func (r *bookingRepository) FindAll(ctx context.Context, f filter.BookingFilter) ([]entity.Booking, int64, error) {
+	db := DB(ctx, r.db).WithContext(ctx).Model(&model.Booking{})
 
-	if filter.Status != "" {
-		db = db.Where("status = ?", filter.Status)
+	if f.Status != "" {
+		db = db.Where("status = ?", f.Status)
 	}
-	if filter.RoomID != nil {
-		db = db.Where("room_id = ?", *filter.RoomID)
+	if f.RoomID != nil {
+		db = db.Where("room_id = ?", *f.RoomID)
 	}
-	if filter.GuestPhone != "" {
-		db = db.Where("guest_phone = ?", filter.GuestPhone)
+	if f.GuestPhone != "" {
+		db = db.Where("guest_phone = ?", f.GuestPhone)
 	}
-	if filter.CheckinFrom != "" {
-		db = db.Where("checkin_date >= ?", filter.CheckinFrom)
+	if f.CheckinFrom != "" {
+		db = db.Where("checkin_date >= ?", f.CheckinFrom)
 	}
-	if filter.CheckinTo != "" {
-		db = db.Where("checkin_date <= ?", filter.CheckinTo)
+	if f.CheckinTo != "" {
+		db = db.Where("checkin_date <= ?", f.CheckinTo)
 	}
 
 	var total int64
@@ -61,10 +45,10 @@ func (r *bookingRepository) FindAll(ctx context.Context, filter filter.BookingFi
 		return nil, 0, err
 	}
 
-	page, limit := utils.NormalizePage(filter.Page, filter.Limit)
+	page, limit := utils.NormalizePage(f.Page, f.Limit)
 	offset := (page - 1) * limit
 
-	var bookings []entity.Booking
+	var bookings []model.Booking
 	err := db.
 		Preload("Room", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "name")
@@ -76,40 +60,47 @@ func (r *bookingRepository) FindAll(ctx context.Context, filter filter.BookingFi
 		Offset(offset).
 		Limit(limit).
 		Find(&bookings).Error
+	if err != nil {
+		return nil, 0, err
+	}
 
-	return bookings, total, err
+	return model.BookingsToDomain(bookings), total, nil
 }
 
 func (r *bookingRepository) FindByID(ctx context.Context, id uint) (*entity.Booking, error) {
-	var booking entity.Booking
+	var m model.Booking
 	err := DB(ctx, r.db).WithContext(ctx).
 		Preload("Room").
 		Preload("Payments", func(db *gorm.DB) *gorm.DB {
 			return db.Order("created_at DESC")
 		}).
-		First(&booking, id).Error
-
+		First(&m, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	return &booking, err
+	if err != nil {
+		return nil, err
+	}
+	return m.ToDomain(), nil
 }
 
 func (r *bookingRepository) FindByCode(ctx context.Context, code string) (*entity.Booking, error) {
-	var booking entity.Booking
+	var m model.Booking
 	err := DB(ctx, r.db).WithContext(ctx).
 		Preload("Room").
 		Where("booking_code = ?", code).
-		First(&booking).Error
-
+		First(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	return &booking, err
+	if err != nil {
+		return nil, err
+	}
+	return m.ToDomain(), nil
 }
 
 func (r *bookingRepository) FindByGuestPhone(ctx context.Context, phone string) ([]entity.Booking, error) {
-	var bookings []entity.Booking
+	var bookings []model.Booking
 	err := DB(ctx, r.db).WithContext(ctx).
 		Preload("Room", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id, name")
@@ -117,7 +108,10 @@ func (r *bookingRepository) FindByGuestPhone(ctx context.Context, phone string) 
 		Where("guest_phone = ?", phone).
 		Order("created_at DESC").
 		Find(&bookings).Error
-	return bookings, err
+	if err != nil {
+		return nil, err
+	}
+	return model.BookingsToDomain(bookings), nil
 }
 
 func (r *bookingRepository) Create(ctx context.Context, booking *entity.Booking) error {
@@ -128,7 +122,7 @@ func (r *bookingRepository) Create(ctx context.Context, booking *entity.Booking)
 
 		now := time.Now()
 		var conflictCount int64
-		err := tx.Model(&entity.Booking{}).
+		err := tx.Model(&model.Booking{}).
 			Where("room_id = ?", booking.RoomID).
 			Where("(status = ? OR (status = ? AND expires_at > ?))",
 				entity.BookingConfirmed, entity.BookingPending, now).
@@ -142,7 +136,7 @@ func (r *bookingRepository) Create(ctx context.Context, booking *entity.Booking)
 		}
 
 		var blockedCount int64
-		err = tx.Model(&entity.BlockedDate{}).
+		err = tx.Model(&model.BlockedDate{}).
 			Where("room_id = ?", booking.RoomID).
 			Where("date >= ? AND date < ?", booking.CheckinDate, booking.CheckoutDate).
 			Count(&blockedCount).Error
@@ -153,12 +147,22 @@ func (r *bookingRepository) Create(ctx context.Context, booking *entity.Booking)
 			return apperrors.ErrRoomNotAvailable
 		}
 
-		return tx.Create(booking).Error
+		m := model.BookingFromDomain(booking)
+		if err := tx.Create(m).Error; err != nil {
+			return err
+		}
+		*booking = *m.ToDomain()
+		return nil
 	})
 }
 
 func (r *bookingRepository) Update(ctx context.Context, booking *entity.Booking) error {
-	return DB(ctx, r.db).WithContext(ctx).Save(booking).Error
+	m := model.BookingFromDomain(booking)
+	if err := DB(ctx, r.db).WithContext(ctx).Save(m).Error; err != nil {
+		return err
+	}
+	*booking = *m.ToDomain()
+	return nil
 }
 
 func (r *bookingRepository) IsAvailable(
@@ -170,12 +174,12 @@ func (r *bookingRepository) IsAvailable(
 	db := DB(ctx, r.db).WithContext(ctx)
 	now := time.Now()
 
-	confirmedQ := db.Model(&entity.Booking{}).
+	confirmedQ := db.Model(&model.Booking{}).
 		Where("room_id = ?", roomID).
 		Where("status = ?", entity.BookingConfirmed).
 		Where("checkin_date < ? AND checkout_date > ?", checkout, checkin)
 
-	pendingQ := db.Model(&entity.Booking{}).
+	pendingQ := db.Model(&model.Booking{}).
 		Where("room_id = ?", roomID).
 		Where("status = ?", entity.BookingPending).
 		Where("expires_at > ?", now).
@@ -201,7 +205,7 @@ func (r *bookingRepository) IsAvailable(
 	}
 
 	var blockedCount int64
-	err := db.Model(&entity.BlockedDate{}).
+	err := db.Model(&model.BlockedDate{}).
 		Where("room_id = ?", roomID).
 		Where("date >= ? AND date < ?", checkin, checkout).
 		Count(&blockedCount).Error
@@ -219,7 +223,7 @@ func (r *bookingRepository) LockRoom(ctx context.Context, roomID uint) error {
 
 func (r *bookingRepository) CancelExpiredPending(ctx context.Context) (int64, error) {
 	result := DB(ctx, r.db).WithContext(ctx).
-		Model(&entity.Booking{}).
+		Model(&model.Booking{}).
 		Where("status = ? AND expires_at < ?", entity.BookingPending, time.Now()).
 		Updates(map[string]interface{}{
 			"status":        entity.BookingCanceled,
@@ -234,7 +238,7 @@ func (r *bookingRepository) MarkCompletedPastCheckout(ctx context.Context) (int6
 	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
 	result := DB(ctx, r.db).WithContext(ctx).
-		Model(&entity.Booking{}).
+		Model(&model.Booking{}).
 		Where("status = ? AND checkout_date < ?", entity.BookingConfirmed, startOfToday).
 		Update("status", entity.BookingCompleted)
 	return result.RowsAffected, result.Error
