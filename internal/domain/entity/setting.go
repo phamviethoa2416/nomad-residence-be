@@ -1,15 +1,14 @@
 package entity
 
 import (
+	"encoding/json"
 	"time"
-
-	"gorm.io/datatypes"
 )
 
 type Setting struct {
-	Key   string         `gorm:"primaryKey;type:varchar(100)"`
-	Value datatypes.JSON `gorm:"type:jsonb;not null"`
+	Key   string          `json:"key"`
+	Value json.RawMessage `json:"value"`
 
-	Description *string
-	UpdatedAt   time.Time `gorm:"autoUpdateTime"`
+	Description *string   `json:"description,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }

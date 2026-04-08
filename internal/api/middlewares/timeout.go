@@ -11,9 +11,6 @@ import (
 func Timeout(d time.Duration) gin.HandlerFunc {
 	return timeout.New(
 		timeout.WithTimeout(d),
-		timeout.WithHandler(func(c *gin.Context) {
-			c.Next()
-		}),
 		timeout.WithResponse(func(c *gin.Context) {
 			c.AbortWithStatusJSON(http.StatusGatewayTimeout, ErrorResponse{
 				Success: false,

@@ -10,7 +10,7 @@ func Authorize(allowedRoles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		admin := GetAdminContext(c)
 		if admin == nil {
-			abortWithError(c, apperrors.New(
+			AbortWithError(c, apperrors.New(
 				401,
 				"UNAUTHORIZED",
 				"Vui lòng đăng nhập"),
@@ -30,7 +30,7 @@ func Authorize(allowedRoles ...string) gin.HandlerFunc {
 			}
 		}
 
-		abortWithError(c, apperrors.New(
+		AbortWithError(c, apperrors.New(
 			403,
 			"FORBIDDEN",
 			"Bạn không có quyền truy cập"),

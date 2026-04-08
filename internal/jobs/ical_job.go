@@ -3,16 +3,16 @@ package jobs
 import (
 	"context"
 	"log/slog"
-	"nomad-residence-be/internal/usecase"
+	"nomad-residence-be/internal/domain/port"
 	"time"
 )
 
 type IcalJob struct {
-	icalUsecase *usecase.IcalUsecase
+	icalUsecase port.IcalUsecase
 	logger      *slog.Logger
 }
 
-func NewIcalJob(icalUsecase *usecase.IcalUsecase, logger *slog.Logger) *IcalJob {
+func NewIcalJob(icalUsecase port.IcalUsecase, logger *slog.Logger) *IcalJob {
 	return &IcalJob{icalUsecase: icalUsecase, logger: logger}
 }
 

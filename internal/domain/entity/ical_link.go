@@ -11,22 +11,20 @@ const (
 )
 
 type IcalLink struct {
-	ID     uint `gorm:"primaryKey"`
-	RoomID uint `gorm:"not null;index"`
+	ID     uint `json:"id"`
+	RoomID uint `json:"room_id"`
 
-	Platform string `gorm:"type:varchar(50);not null"`
+	Platform  string  `json:"platform"`
+	ImportURL *string `json:"import_url,omitempty"`
+	ExportURL *string `json:"export_url,omitempty"`
 
-	ImportURL *string `gorm:"type:text"`
-	ExportURL *string `gorm:"type:text"`
+	LastSyncedAt *time.Time     `json:"last_synced_at,omitempty"`
+	SyncStatus   IcalSyncStatus `json:"sync_status"`
+	SyncError    *string        `json:"sync_error,omitempty"`
 
-	LastSyncedAt *time.Time
-
-	SyncStatus IcalSyncStatus `gorm:"type:varchar(20);default:'idle'"`
-	SyncError  *string
-
-	IsActive bool `gorm:"default:true"`
+	IsActive bool `json:"is_active"`
 
 	BaseModel
 
-	Room Room `gorm:"foreignKey:RoomID" json:"-"`
+	Room Room `json:"-"`
 }

@@ -4,16 +4,16 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"nomad-residence-be/internal/repository"
+	"nomad-residence-be/internal/domain/port"
 	"time"
 )
 
 type BookingJob struct {
-	bookingRepo repository.BookingRepository
+	bookingRepo port.BookingRepository
 	logger      *slog.Logger
 }
 
-func NewBookingJob(bookingRepo repository.BookingRepository, logger *slog.Logger) *BookingJob {
+func NewBookingJob(bookingRepo port.BookingRepository, logger *slog.Logger) *BookingJob {
 	return &BookingJob{bookingRepo: bookingRepo, logger: logger}
 }
 

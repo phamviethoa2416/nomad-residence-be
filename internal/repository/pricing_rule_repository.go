@@ -4,45 +4,42 @@ import (
 	"context"
 	"errors"
 	"nomad-residence-be/internal/domain/entity"
+	"nomad-residence-be/internal/repository/model"
 	"time"
 
 	"gorm.io/gorm"
 )
 
-type PricingRuleRepository interface {
-	FindByRoomID(ctx context.Context, roomID uint) ([]entity.PricingRule, error)
-	FindByID(ctx context.Context, id uint) (*entity.PricingRule, error)
-	FindActiveRulesForRange(ctx context.Context, roomID uint, from, to time.Time) ([]entity.PricingRule, error)
-
-	Create(ctx context.Context, rule *entity.PricingRule) error
-	Update(ctx context.Context, rule *entity.PricingRule) error
-	Delete(ctx context.Context, id uint) error
-}
-
 type pricingRuleRepository struct {
 	db *gorm.DB
 }
 
-func NewPricingRuleRepository(db *gorm.DB) PricingRuleRepository {
+func NewPricingRuleRepository(db *gorm.DB) *pricingRuleRepository {
 	return &pricingRuleRepository{db: db}
 }
 
 func (r *pricingRuleRepository) FindByRoomID(ctx context.Context, roomID uint) ([]entity.PricingRule, error) {
-	var rules []entity.PricingRule
+	var rules []model.PricingRule
 	err := DB(ctx, r.db).WithContext(ctx).
 		Where("room_id = ?", roomID).
 		Order("priority DESC, created_at DESC").
 		Find(&rules).Error
-	return rules, err
+	if err != nil {
+		return nil, err
+	}
+	return model.PricingRulesToDomain(rules), nil
 }
 
 func (r *pricingRuleRepository) FindByID(ctx context.Context, id uint) (*entity.PricingRule, error) {
-	var rule entity.PricingRule
-	err := DB(ctx, r.db).WithContext(ctx).First(&rule, id).Error
+	var m model.PricingRule
+	err := DB(ctx, r.db).WithContext(ctx).First(&m, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	return &rule, err
+	if err != nil {
+		return nil, err
+	}
+	return m.ToDomain(), nil
 }
 
 func (r *pricingRuleRepository) FindActiveRulesForRange(
@@ -50,7 +47,7 @@ func (r *pricingRuleRepository) FindActiveRulesForRange(
 	roomID uint,
 	from, to time.Time,
 ) ([]entity.PricingRule, error) {
-	var rules []entity.PricingRule
+	var rules []model.PricingRule
 
 	err := DB(ctx, r.db).WithContext(ctx).
 		Where("room_id = ? AND is_active = ?", roomID, true).
@@ -60,18 +57,30 @@ func (r *pricingRuleRepository) FindActiveRulesForRange(
 		).
 		Order("priority DESC, created_at DESC").
 		Find(&rules).Error
-
-	return rules, err
+	if err != nil {
+		return nil, err
+	}
+	return model.PricingRulesToDomain(rules), nil
 }
 
 func (r *pricingRuleRepository) Create(ctx context.Context, rule *entity.PricingRule) error {
-	return DB(ctx, r.db).WithContext(ctx).Create(rule).Error
+	m := model.PricingRuleFromDomain(rule)
+	if err := DB(ctx, r.db).WithContext(ctx).Create(m).Error; err != nil {
+		return err
+	}
+	*rule = *m.ToDomain()
+	return nil
 }
 
 func (r *pricingRuleRepository) Update(ctx context.Context, rule *entity.PricingRule) error {
-	return DB(ctx, r.db).WithContext(ctx).Save(rule).Error
+	m := model.PricingRuleFromDomain(rule)
+	if err := DB(ctx, r.db).WithContext(ctx).Save(m).Error; err != nil {
+		return err
+	}
+	*rule = *m.ToDomain()
+	return nil
 }
 
 func (r *pricingRuleRepository) Delete(ctx context.Context, id uint) error {
-	return DB(ctx, r.db).WithContext(ctx).Delete(&entity.PricingRule{}, id).Error
+	return DB(ctx, r.db).WithContext(ctx).Delete(&model.PricingRule{}, id).Error
 }

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"nomad-residence-be/internal/domain/entity"
+	"nomad-residence-be/internal/repository/model"
 	"strings"
 	"time"
 
@@ -10,20 +11,11 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-type BlockedDateRepository interface {
-	FindByRoomAndRange(ctx context.Context, roomID uint, from, to time.Time) ([]entity.BlockedDate, error)
-	BulkCreate(ctx context.Context, dates []entity.BlockedDate) error
-	DeleteByRoomAndDate(ctx context.Context, roomID uint, date time.Time) error
-	DeleteByRoomAndRange(ctx context.Context, roomID uint, from, to time.Time) error
-	DeleteByRoomAndSource(ctx context.Context, roomID uint, source string) error
-	GetUnavailableRoomIDs(ctx context.Context, checkin, checkout time.Time) ([]uint, error)
-}
-
 type blockedDateRepository struct {
 	db *gorm.DB
 }
 
-func NewBlockedDateRepository(db *gorm.DB) BlockedDateRepository {
+func NewBlockedDateRepository(db *gorm.DB) *blockedDateRepository {
 	return &blockedDateRepository{db: db}
 }
 
@@ -35,31 +27,34 @@ func (r *blockedDateRepository) FindByRoomAndRange(ctx context.Context, roomID u
 		db = db.Where("room_id = ?", roomID)
 	}
 
-	var dates []entity.BlockedDate
+	var dates []model.BlockedDate
 	err := db.Order("room_id ASC, date ASC").Find(&dates).Error
-	return dates, err
+	if err != nil {
+		return nil, err
+	}
+	return model.BlockedDatesToDomain(dates), nil
 }
 
 func (r *blockedDateRepository) BulkCreate(ctx context.Context, dates []entity.BlockedDate) error {
 	if len(dates) == 0 {
 		return nil
 	}
-
+	models := model.BlockedDatesFromDomain(dates)
 	return DB(ctx, r.db).WithContext(ctx).
 		Clauses(clause.OnConflict{DoNothing: true}).
-		CreateInBatches(&dates, 100).Error
+		CreateInBatches(&models, 100).Error
 }
 
 func (r *blockedDateRepository) DeleteByRoomAndDate(ctx context.Context, roomID uint, date time.Time) error {
 	return DB(ctx, r.db).WithContext(ctx).
 		Where("room_id = ? AND date = ?", roomID, date).
-		Delete(&entity.BlockedDate{}).Error
+		Delete(&model.BlockedDate{}).Error
 }
 
 func (r *blockedDateRepository) DeleteByRoomAndRange(ctx context.Context, roomID uint, from, to time.Time) error {
 	return DB(ctx, r.db).WithContext(ctx).
 		Where("room_id = ? AND date >= ? AND date < ?", roomID, from, to).
-		Delete(&entity.BlockedDate{}).Error
+		Delete(&model.BlockedDate{}).Error
 }
 
 func (r *blockedDateRepository) DeleteByRoomAndSource(ctx context.Context, roomID uint, source string) error {
@@ -70,12 +65,12 @@ func (r *blockedDateRepository) DeleteByRoomAndSource(ctx context.Context, roomI
 		ref := source[idx+1:]
 		return db.
 			Where("room_id = ? AND source = ? AND source_ref = ?", roomID, src, ref).
-			Delete(&entity.BlockedDate{}).Error
+			Delete(&model.BlockedDate{}).Error
 	}
 
 	return db.
 		Where("room_id = ? AND source = ?", roomID, source).
-		Delete(&entity.BlockedDate{}).Error
+		Delete(&model.BlockedDate{}).Error
 }
 
 func (r *blockedDateRepository) GetUnavailableRoomIDs(ctx context.Context, checkin, checkout time.Time) ([]uint, error) {
@@ -84,11 +79,10 @@ func (r *blockedDateRepository) GetUnavailableRoomIDs(ctx context.Context, check
 	}
 	var rows []result
 	err := DB(ctx, r.db).WithContext(ctx).
-		Model(&entity.BlockedDate{}).
+		Model(&model.BlockedDate{}).
 		Select("DISTINCT room_id").
 		Where("date >= ? AND date < ?", checkin, checkout).
 		Scan(&rows).Error
-
 	if err != nil {
 		return nil, err
 	}
