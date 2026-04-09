@@ -9,4 +9,5 @@ type NotificationService interface {
 	SendBookingConfirmationEmail(ctx context.Context, booking *entity.Booking) error
 	SendBookingCancellationEmail(ctx context.Context, booking *entity.Booking) error
 	NotifyAdminBookingConfirmed(ctx context.Context, booking *entity.Booking) error
+	SendTelegram(ctx context.Context, message string) error
 }
