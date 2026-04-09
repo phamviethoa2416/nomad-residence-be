@@ -9,6 +9,7 @@ import (
 	"nomad-residence-be/config"
 	"nomad-residence-be/internal/api"
 	"nomad-residence-be/internal/infrastructure/database"
+	"nomad-residence-be/internal/infrastructure/ical"
 	"nomad-residence-be/internal/infrastructure/notification"
 	"nomad-residence-be/internal/infrastructure/vietqr"
 	"nomad-residence-be/internal/jobs"
@@ -60,9 +61,11 @@ func main() {
 	pricingRepository := repository.NewPricingRuleRepository(db)
 	paymentRepository := repository.NewPaymentRepository(db)
 	settingRepository := repository.NewSettingRepository(db)
+	tx := repository.NewTransactionManager(db)
 
 	notificationService := notification.NewService(appConfig.Notification)
 	VietQRService := vietqr.NewService(appConfig.VietQR)
+	icalService := ical.NewHTTPFetcher()
 
 	icalSecret := os.Getenv("ICAL_SECRET")
 	if icalSecret == "" {
@@ -76,9 +79,9 @@ func main() {
 
 	pricingUsecase := usecase.NewPricingUsecase(pricingRepository, roomRepository, bookingRepository, logger)
 	roomUsecase := usecase.NewRoomUsecase(roomRepository, blockedRepository, bookingRepository, pricingUsecase, logger)
-	bookingUsecase := usecase.NewBookingUsecase(db, bookingRepository, roomRepository, blockedRepository, paymentRepository, pricingUsecase, notificationService, logger)
-	paymentUsecase := usecase.NewPaymentUsecase(db, paymentRepository, bookingRepository, blockedRepository, bookingUsecase, logger)
-	icalUsecase := usecase.NewIcalUsecase(icalLinkRepository, blockedRepository, bookingRepository, roomRepository, notificationService, usecase.NewHTTPFetcher(), icalSecret, appURL, logger)
+	bookingUsecase := usecase.NewBookingUsecase(db, tx, bookingRepository, roomRepository, blockedRepository, paymentRepository, pricingUsecase, notificationService, logger)
+	paymentUsecase := usecase.NewPaymentUsecase(db, tx, paymentRepository, bookingRepository, blockedRepository, bookingUsecase, logger)
+	icalUsecase := usecase.NewIcalUsecase(icalLinkRepository, blockedRepository, bookingRepository, roomRepository, notificationService, icalService, icalSecret, appURL, logger)
 
 	// Scheduler
 	scheduler := jobs.NewScheduler(
