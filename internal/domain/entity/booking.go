@@ -9,6 +9,7 @@ import (
 
 type BookingStatus string
 type BookingSource string
+type RefundStatus string
 
 const (
 	BookingPending   BookingStatus = "pending"
@@ -20,6 +21,10 @@ const (
 	BookingSourceWebsite BookingSource = "website"
 	BookingSourceAdmin   BookingSource = "admin"
 	BookingSourceIcal    BookingSource = "ical"
+
+	RefundNone      RefundStatus = "none"
+	RefundPending   RefundStatus = "pending"
+	RefundCompleted RefundStatus = "completed"
 )
 
 type Booking struct {
@@ -58,6 +63,10 @@ type Booking struct {
 	CancelReason *string `json:"cancel_reason,omitempty"`
 
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+
+	RequiresRefund   bool            `json:"requires_refund"`
+	RefundableAmount decimal.Decimal `json:"refundable_amount"`
+	RefundStatus     RefundStatus    `json:"refund_status"`
 
 	AdminNote *string `json:"admin_note,omitempty"`
 
