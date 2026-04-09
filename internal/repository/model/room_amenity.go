@@ -29,5 +29,9 @@ func (m *RoomAmenity) ToDomain() *entity.RoomAmenity {
 	if m == nil {
 		return nil
 	}
-	return &entity.RoomAmenity{RoomID: m.RoomID, AmenityID: m.AmenityID}
+	d := &entity.RoomAmenity{RoomID: m.RoomID, AmenityID: m.AmenityID}
+	if am := m.Amenity.ToDomain(); am != nil {
+		d.Amenity = *am
+	}
+	return d
 }

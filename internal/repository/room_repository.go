@@ -9,6 +9,7 @@ import (
 	"nomad-residence-be/pkg/utils"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type roomRepository struct {
@@ -85,9 +86,8 @@ func (r *roomRepository) FindByID(ctx context.Context, id uint) (*entity.Room, e
 		Preload("Images", func(db *gorm.DB) *gorm.DB {
 			return db.Order("sort_order ASC")
 		}).
-		Preload("Amenities", func(db *gorm.DB) *gorm.DB {
-			return db.Order("category ASC")
-		}).
+		Preload("Amenities").
+		Preload("Amenities.Amenity", func(db *gorm.DB) *gorm.DB { return db.Order("category ASC, name ASC") }).
 		First(&m, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
@@ -104,9 +104,8 @@ func (r *roomRepository) FindBySlug(ctx context.Context, slug string) (*entity.R
 		Preload("Images", func(db *gorm.DB) *gorm.DB {
 			return db.Order("is_primary DESC, sort_order ASC")
 		}).
-		Preload("Amenities", func(db *gorm.DB) *gorm.DB {
-			return db.Order("category ASC")
-		}).
+		Preload("Amenities").
+		Preload("Amenities.Amenity", func(db *gorm.DB) *gorm.DB { return db.Order("category ASC, name ASC") }).
 		Where("slug = ?", slug).
 		First(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -191,10 +190,12 @@ func (r *roomRepository) AddAmenities(ctx context.Context, amenities []entity.Ro
 }
 
 func (r *roomRepository) DeleteAmenity(ctx context.Context, amenityID uint) error {
-	return DB(ctx, r.db).WithContext(ctx).Delete(&model.RoomAmenity{}, amenityID).Error
+	return DB(ctx, r.db).WithContext(ctx).
+		Where("amenity_id = ?", amenityID).
+		Delete(&model.RoomAmenity{}).Error
 }
 
-func (r *roomRepository) ReplaceAmenities(ctx context.Context, roomID uint, amenities []entity.RoomAmenity) error {
+func (r *roomRepository) ReplaceAmenities(ctx context.Context, roomID uint, amenities []entity.Amenity) error {
 	return DB(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("room_id = ?", roomID).Delete(&model.RoomAmenity{}).Error; err != nil {
 			return err
@@ -202,7 +203,46 @@ func (r *roomRepository) ReplaceAmenities(ctx context.Context, roomID uint, amen
 		if len(amenities) == 0 {
 			return nil
 		}
-		models := model.RoomAmenitiesFromDomain(amenities)
-		return tx.Create(&models).Error
+
+		joins := make([]model.RoomAmenity, 0, len(amenities))
+		for _, a := range amenities {
+			if a.Name == "" {
+				continue
+			}
+
+			am := model.Amenity{
+				Name:     a.Name,
+				Icon:     a.Icon,
+				Category: a.Category,
+			}
+			if am.Category == "" {
+				am.Category = "general"
+			}
+
+			if err := tx.
+				Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "name"}},
+					DoUpdates: clause.AssignmentColumns([]string{"icon", "category", "updated_at"}),
+				}).
+				Create(&am).Error; err != nil {
+				return err
+			}
+			if am.ID == 0 {
+				if err := tx.Select("id").Where("name = ?", am.Name).First(&am).Error; err != nil {
+					return err
+				}
+			}
+
+			joins = append(joins, model.RoomAmenity{
+				RoomID:    roomID,
+				AmenityID: am.ID,
+			})
+		}
+
+		if len(joins) == 0 {
+			return nil
+		}
+
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&joins).Error
 	})
 }

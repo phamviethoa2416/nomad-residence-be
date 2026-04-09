@@ -45,6 +45,10 @@ type Booking struct {
 
 	ExpiresAt *time.Time `gorm:"index"`
 
+	RequiresRefund   bool                `gorm:"not null;default:false"`
+	RefundableAmount decimal.Decimal     `gorm:"type:decimal(12,0);not null;default:0"`
+	RefundStatus     entity.RefundStatus `gorm:"type:varchar(20);not null;default:'none';index"`
+
 	AdminNote *string `gorm:"type:text"`
 
 	Room     Room      `gorm:"foreignKey:RoomID"`
@@ -71,6 +75,7 @@ func BookingFromDomain(e *entity.Booking) *Booking {
 		Status:         e.Status, Source: e.Source,
 		ConfirmedAt: e.ConfirmedAt, CanceledAt: e.CanceledAt,
 		CancelReason: e.CancelReason, ExpiresAt: e.ExpiresAt,
+		RequiresRefund: e.RequiresRefund, RefundableAmount: e.RefundableAmount, RefundStatus: e.RefundStatus,
 		AdminNote: e.AdminNote,
 		BaseModel: baseFromDomain(e.BaseModel),
 	}
@@ -92,6 +97,7 @@ func (m *Booking) ToDomain() *entity.Booking {
 		Status:         m.Status, Source: m.Source,
 		ConfirmedAt: m.ConfirmedAt, CanceledAt: m.CanceledAt,
 		CancelReason: m.CancelReason, ExpiresAt: m.ExpiresAt,
+		RequiresRefund: m.RequiresRefund, RefundableAmount: m.RefundableAmount, RefundStatus: m.RefundStatus,
 		AdminNote: m.AdminNote,
 		BaseModel: m.BaseModel.toDomainBase(),
 	}

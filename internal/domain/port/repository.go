@@ -31,7 +31,7 @@ type RoomRepository interface {
 
 	AddAmenities(ctx context.Context, amenities []entity.RoomAmenity) error
 	DeleteAmenity(ctx context.Context, amenityID uint) error
-	ReplaceAmenities(ctx context.Context, roomID uint, amenities []entity.RoomAmenity) error
+	ReplaceAmenities(ctx context.Context, roomID uint, amenities []entity.Amenity) error
 }
 
 type BookingRepository interface {

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"nomad-residence-be/internal/domain/entity"
 	"nomad-residence-be/internal/domain/filter"
 	"nomad-residence-be/internal/repository/model"
@@ -220,10 +221,14 @@ func (r *bookingRepository) IsAvailable(
 	}
 
 	var blockedCount int64
-	err := db.Model(&model.BlockedDate{}).
+	blockedQ := db.Model(&model.BlockedDate{}).
 		Where("room_id = ?", roomID).
-		Where("date >= ? AND date < ?", checkin, checkout).
-		Count(&blockedCount).Error
+		Where("date >= ? AND date < ?", checkin, checkout)
+	if excludeBookingID != nil {
+		bookingRef := fmt.Sprintf("booking:%d", *excludeBookingID)
+		blockedQ = blockedQ.Where("(source_ref IS NULL OR source_ref <> ?)", bookingRef)
+	}
+	err := blockedQ.Count(&blockedCount).Error
 	if err != nil {
 		return false, err
 	}

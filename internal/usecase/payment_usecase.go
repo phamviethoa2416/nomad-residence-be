@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"nomad-residence-be/internal/domain/entity"
-	"nomad-residence-be/internal/repository"
-	apperrors "nomad-residence-be/pkg/errors"
+	"nomad-residence-be/internal/domain/port"
+	"nomad-residence-be/pkg/errors"
+	"nomad-residence-be/pkg/utils"
 	"strings"
 	"time"
 
@@ -17,23 +18,26 @@ import (
 
 type PaymentUsecase struct {
 	db              *gorm.DB
-	paymentRepo     repository.PaymentRepository
-	bookingRepo     repository.BookingRepository
-	blockedDateRepo repository.BlockedDateRepository
+	tx              port.TransactionManager
+	paymentRepo     port.PaymentRepository
+	bookingRepo     port.BookingRepository
+	blockedDateRepo port.BlockedDateRepository
 	bookingUsecase  *BookingUsecase
 	logger          *slog.Logger
 }
 
 func NewPaymentUsecase(
 	db *gorm.DB,
-	paymentRepo repository.PaymentRepository,
-	bookingRepo repository.BookingRepository,
-	blockedDateRepo repository.BlockedDateRepository,
+	tx port.TransactionManager,
+	paymentRepo port.PaymentRepository,
+	bookingRepo port.BookingRepository,
+	blockedDateRepo port.BlockedDateRepository,
 	bookingUsecase *BookingUsecase,
 	logger *slog.Logger,
 ) *PaymentUsecase {
 	return &PaymentUsecase{
 		db:              db,
+		tx:              tx,
 		paymentRepo:     paymentRepo,
 		bookingRepo:     bookingRepo,
 		blockedDateRepo: blockedDateRepo,
@@ -53,16 +57,18 @@ func (uc *PaymentUsecase) CreatePayment(
 		return nil, err
 	}
 	if booking == nil {
-		return nil, apperrors.ErrBookingNotFound
+		return nil, errors.ErrBookingNotFound
 	}
 
 	if booking.Status != entity.BookingPending && booking.Status != entity.BookingConfirmed {
-		return nil, apperrors.ErrInvalidStatus
+		return nil, errors.ErrInvalidStatus
 	}
 
 	if booking.ExpiresAt != nil && booking.ExpiresAt.Before(time.Now()) && booking.Status == entity.BookingPending {
-		return nil, apperrors.ErrBookingExpired
+		return nil, errors.ErrBookingExpired
 	}
+
+	idempotencyKey := fmt.Sprintf("%d-%s-%s", bookingID, method, uuid.New().String()[:8])
 
 	payment := &entity.Payment{
 		BookingID:      bookingID,
@@ -70,7 +76,7 @@ func (uc *PaymentUsecase) CreatePayment(
 		Currency:       "VND",
 		Method:         entity.PaymentMethod(method),
 		Status:         entity.PaymentPending,
-		IdempotencyKey: generateIdempotencyKey(bookingID, method),
+		IdempotencyKey: idempotencyKey,
 	}
 
 	if err := uc.paymentRepo.Create(ctx, payment); err != nil {
@@ -86,7 +92,7 @@ func (uc *PaymentUsecase) GetPaymentByID(ctx context.Context, id uint) (*entity.
 		return nil, err
 	}
 	if payment == nil {
-		return nil, apperrors.ErrPaymentNotFound
+		return nil, errors.ErrPaymentNotFound
 	}
 	return payment, nil
 }
@@ -101,14 +107,11 @@ func (uc *PaymentUsecase) GetPaymentsByBookingCode(ctx context.Context, bookingC
 		return nil, err
 	}
 	if booking == nil {
-		return nil, apperrors.ErrBookingNotFound
+		return nil, errors.ErrBookingNotFound
 	}
 	return uc.paymentRepo.FindByBookingID(ctx, booking.ID)
 }
 
-// HandleVietQRWebhook processes incoming VietQR payment webhooks.
-// It extracts the booking code from the payment content, verifies the amount,
-// and confirms the booking if payment matches.
 func (uc *PaymentUsecase) HandleVietQRWebhook(
 	ctx context.Context,
 	transactionID string,
@@ -120,7 +123,7 @@ func (uc *PaymentUsecase) HandleVietQRWebhook(
 		return err
 	}
 	if existing != nil {
-		return apperrors.ErrAlreadyProcessed
+		return errors.ErrAlreadyProcessed
 	}
 
 	bookingCode := extractBookingCode(content)
@@ -129,7 +132,7 @@ func (uc *PaymentUsecase) HandleVietQRWebhook(
 			slog.String("content", content),
 			slog.String("transaction_id", transactionID),
 		)
-		return apperrors.ErrBookingNotFound
+		return errors.ErrBookingNotFound
 	}
 
 	booking, err := uc.bookingRepo.FindByCode(ctx, bookingCode)
@@ -137,30 +140,103 @@ func (uc *PaymentUsecase) HandleVietQRWebhook(
 		return err
 	}
 	if booking == nil {
-		return apperrors.ErrBookingNotFound
+		return errors.ErrBookingNotFound
 	}
 
-	if booking.Status != entity.BookingPending {
-		if booking.Status == entity.BookingConfirmed {
-			return apperrors.ErrAlreadyProcessed
+	return uc.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		alreadyProcessed, err := uc.paymentRepo.FindByQRTransactionID(txCtx, transactionID)
+		if err != nil {
+			return err
 		}
-		return apperrors.ErrInvalidStatus
-	}
+		if alreadyProcessed != nil {
+			return errors.ErrAlreadyProcessed
+		}
 
-	if !amount.Equal(booking.TotalAmount) {
-		uc.logger.Warn("VietQR webhook: amount mismatch",
-			slog.String("booking_code", bookingCode),
-			slog.String("expected", booking.TotalAmount.String()),
-			slog.String("received", amount.String()),
-		)
-		return apperrors.ErrInvalidAmount
-	}
+		if err := uc.bookingRepo.LockRoom(txCtx, booking.RoomID); err != nil {
+			return err
+		}
 
-	return uc.confirmPaymentAndBooking(ctx, booking, transactionID, amount)
+		lockedBooking, err := uc.bookingRepo.FindByID(txCtx, booking.ID)
+		if err != nil {
+			return err
+		}
+		if lockedBooking == nil {
+			return errors.ErrBookingNotFound
+		}
+
+		if lockedBooking.Status != entity.BookingPending {
+			if lockedBooking.Status == entity.BookingConfirmed {
+				return errors.ErrAlreadyProcessed
+			}
+			return errors.ErrInvalidStatus
+		}
+		if lockedBooking.ExpiresAt != nil && lockedBooking.ExpiresAt.Before(time.Now()) {
+			return errors.ErrBookingExpired
+		}
+
+		if !amount.Equal(lockedBooking.TotalAmount) {
+			uc.logger.Warn("VietQR webhook: amount mismatch",
+				slog.String("booking_code", bookingCode),
+				slog.String("expected", lockedBooking.TotalAmount.String()),
+				slog.String("received", amount.String()),
+				slog.String("transaction_id", transactionID),
+			)
+
+			note := fmt.Sprintf("Discrepancy: expected=%s received=%s", lockedBooking.TotalAmount.String(), amount.String())
+			failed := &entity.Payment{
+				BookingID:             lockedBooking.ID,
+				Amount:                amount,
+				Currency:              "VND",
+				Method:                entity.PaymentVietQR,
+				Status:                entity.PaymentFailed,
+				IdempotencyKey:        uuid.New().String(),
+				ExternalTransactionID: &transactionID,
+				AdminNote:             &note,
+			}
+
+			if err := uc.paymentRepo.Create(txCtx, failed); err != nil {
+				return err
+			}
+			return errors.ErrInvalidAmount
+		}
+
+		pendingPayment, err := uc.paymentRepo.FindPendingByBookingID(txCtx, lockedBooking.ID)
+		if err != nil {
+			return err
+		}
+
+		now := time.Now()
+		if pendingPayment != nil {
+			pendingPayment.Status = entity.PaymentPaid
+			pendingPayment.ExternalTransactionID = &transactionID
+			pendingPayment.PaidAt = &now
+			if err := uc.paymentRepo.Update(txCtx, pendingPayment); err != nil {
+				return err
+			}
+		} else {
+			newPayment := &entity.Payment{
+				BookingID:             lockedBooking.ID,
+				Amount:                amount,
+				Currency:              "VND",
+				Method:                entity.PaymentVietQR,
+				Status:                entity.PaymentPaid,
+				IdempotencyKey:        uuid.New().String(),
+				ExternalTransactionID: &transactionID,
+				PaidAt:                &now,
+			}
+			if err := uc.paymentRepo.Create(txCtx, newPayment); err != nil {
+				return err
+			}
+		}
+
+		if err := uc.confirmLockedBooking(txCtx, lockedBooking, "Tự động xác nhận qua VietQR"); err != nil {
+			return err
+		}
+
+		return nil
+	})
 }
 
-// HandleQRCallback processes QR payment callbacks, updating the payment record
-// and confirming the booking.
 func (uc *PaymentUsecase) HandleQRCallback(
 	ctx context.Context,
 	transactionID string,
@@ -181,7 +257,7 @@ func (uc *PaymentUsecase) UpdatePaymentStatus(
 		return nil, err
 	}
 	if payment == nil {
-		return nil, apperrors.ErrPaymentNotFound
+		return nil, errors.ErrPaymentNotFound
 	}
 
 	payment.Status = entity.PaymentStatus(status)
@@ -213,63 +289,10 @@ func (uc *PaymentUsecase) UpdatePaymentStatus(
 	return payment, nil
 }
 
-// ConfirmAllPendingPayments marks all pending payments for a booking as paid (admin action).
 func (uc *PaymentUsecase) ConfirmAllPendingPayments(ctx context.Context, bookingID uint, adminNote string) error {
 	return uc.paymentRepo.UpdateManyPendingToSuccess(ctx, bookingID, adminNote)
 }
 
-// --- Internal helpers ---
-
-func (uc *PaymentUsecase) confirmPaymentAndBooking(
-	ctx context.Context,
-	booking *entity.Booking,
-	transactionID string,
-	amount decimal.Decimal,
-) error {
-	return repository.RunInTx(ctx, uc.db, func(txCtx context.Context) error {
-		pendingPayment, err := uc.paymentRepo.FindPendingByBookingID(txCtx, booking.ID)
-		if err != nil {
-			return err
-		}
-
-		now := time.Now()
-		if pendingPayment != nil {
-			pendingPayment.Status = entity.PaymentPaid
-			pendingPayment.ExternalTransactionID = &transactionID
-			pendingPayment.PaidAt = &now
-			if err := uc.paymentRepo.Update(txCtx, pendingPayment); err != nil {
-				return err
-			}
-		} else {
-			newPayment := &entity.Payment{
-				BookingID:             booking.ID,
-				Amount:                amount,
-				Currency:              "VND",
-				Method:                entity.PaymentVietQR,
-				Status:                entity.PaymentPaid,
-				IdempotencyKey:        uuid.New().String(),
-				ExternalTransactionID: &transactionID,
-				PaidAt:                &now,
-			}
-			if err := uc.paymentRepo.Create(txCtx, newPayment); err != nil {
-				return err
-			}
-		}
-
-		if _, err := uc.bookingUsecase.ConfirmBooking(txCtx, booking.ID, "Tự động xác nhận qua VietQR"); err != nil {
-			return err
-		}
-
-		return nil
-	})
-}
-
-func generateIdempotencyKey(bookingID uint, method string) string {
-	return fmt.Sprintf("%d-%s-%s", bookingID, method, uuid.New().String()[:8])
-}
-
-// extractBookingCode attempts to extract a booking code (format "NRYYMMDDXXXX")
-// from the payment content/description string.
 func extractBookingCode(content string) string {
 	upper := strings.ToUpper(content)
 	idx := strings.Index(upper, "NR")
@@ -293,4 +316,32 @@ func extractBookingCode(content string) string {
 	}
 
 	return ""
+}
+
+func (uc *PaymentUsecase) confirmLockedBooking(ctx context.Context, booking *entity.Booking, adminNote string) error {
+	now := time.Now()
+	booking.Status = entity.BookingConfirmed
+	booking.ConfirmedAt = &now
+	booking.ExpiresAt = nil
+	if adminNote != "" {
+		booking.AdminNote = &adminNote
+	}
+
+	if err := uc.bookingRepo.Update(ctx, booking); err != nil {
+		return err
+	}
+
+	dates := utils.GetDateRange(booking.CheckinDate, booking.CheckoutDate)
+	blocked := make([]entity.BlockedDate, 0, len(dates))
+	ref := fmt.Sprintf("booking:%d", booking.ID)
+	for _, d := range dates {
+		blocked = append(blocked, entity.BlockedDate{
+			RoomID:    booking.RoomID,
+			Date:      d,
+			Source:    entity.BlockBooking,
+			SourceRef: &ref,
+		})
+	}
+
+	return uc.blockedDateRepo.BulkCreate(ctx, blocked)
 }
