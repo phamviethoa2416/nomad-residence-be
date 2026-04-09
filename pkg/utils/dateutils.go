@@ -4,12 +4,14 @@ import "time"
 
 const DateLayout = "2006-01-02"
 
+var dateLocation = time.FixedZone("Asia/Ho_Chi_Minh", 7*60*60)
+
 func FormatDate(t time.Time) string {
-	return t.Format(DateLayout)
+	return t.In(dateLocation).Format(DateLayout)
 }
 
 func ParseDate(s string) (time.Time, error) {
-	return time.ParseInLocation(DateLayout, s, time.UTC)
+	return time.ParseInLocation(DateLayout, s, dateLocation)
 }
 
 func GetDateRange(from, to time.Time) []time.Time {
@@ -24,7 +26,8 @@ func GetDateRange(from, to time.Time) []time.Time {
 }
 
 func TruncateToDate(t time.Time) time.Time {
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	local := t.In(dateLocation)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, dateLocation)
 }
 
 func AddMinutes(t time.Time, minutes int) time.Time {
