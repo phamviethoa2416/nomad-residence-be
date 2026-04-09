@@ -16,6 +16,7 @@ type AppConfig struct {
 	RateLimit    RateLimitConfig    `mapstructure:"rate_limit"`
 	Scheduler    SchedulerConfig    `mapstructure:"scheduler"`
 	Notification NotificationConfig `mapstructure:"notification"`
+	VietQR       VietQRConfig       `mapstructure:"vietqr"`
 }
 
 type ServerConfig struct {
@@ -83,6 +84,15 @@ type TelegramConfig struct {
 	ChatID   string `mapstructure:"chat_id"`
 }
 
+type VietQRConfig struct {
+	BankBin      string `mapstructure:"bank_bin"`
+	BankName     string `mapstructure:"bank_name"`
+	AccountNo    string `mapstructure:"account_no"`
+	AccountName  string `mapstructure:"account_name"`
+	Template     string `mapstructure:"template"`
+	WebhookToken string `mapstructure:"webhook_token"`
+}
+
 func LoadConfig(path string) (*AppConfig, error) {
 	v := viper.New()
 
@@ -146,6 +156,9 @@ func setDefaults(v *viper.Viper) {
 	// Scheduler
 	v.SetDefault("scheduler.booking_job_cron", "0 * * * *")
 	v.SetDefault("scheduler.ical_sync_interval_minutes", 30)
+
+	// VietQR
+	v.SetDefault("vietqr.template", "compact2")
 }
 
 func validate(cfg *AppConfig) error {

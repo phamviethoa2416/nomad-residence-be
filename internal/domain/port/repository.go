@@ -48,9 +48,11 @@ type BookingRepository interface {
 
 	CancelExpiredPending(ctx context.Context) (int64, error)
 	MarkCompletedPastCheckout(ctx context.Context) (int64, error)
+	FindConfirmedOverlapping(ctx context.Context, roomID uint, minDate, maxDate time.Time) ([]entity.Booking, error)
 }
 
 type BlockedDateRepository interface {
+	FindByID(ctx context.Context, id uint) (*entity.BlockedDate, error)
 	FindByRoomAndRange(ctx context.Context, roomID uint, from, to time.Time) ([]entity.BlockedDate, error)
 	BulkCreate(ctx context.Context, dates []entity.BlockedDate) error
 	DeleteByRoomAndDate(ctx context.Context, roomID uint, date time.Time) error
