@@ -164,3 +164,50 @@ func (h *BookingHandler) CancelBooking(c *gin.Context) {
 
 	c.JSON(200, gin.H{"data": booking, "message": "Đã hủy đơn"})
 }
+
+func (h *BookingHandler) CreateManualBooking(c *gin.Context) {
+	var body request.CreateManualBookingRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	body.ApplyDefaults()
+	if field, msg := body.Validate(); field != "" {
+		c.JSON(400, gin.H{"error": msg, "field": field})
+		return
+	}
+
+	var guestEmail, guestNote *string
+	if body.GuestEmail != "" {
+		guestEmail = &body.GuestEmail
+	}
+	if body.GuestNote != "" {
+		guestNote = &body.GuestNote
+	}
+
+	booking, err := h.bookingUsecase.CreateManualBooking(
+		c.Request.Context(),
+		body.RoomID,
+		body.CheckinDate,
+		body.CheckoutDate,
+		body.GuestName,
+		body.GuestPhone,
+		guestEmail,
+		guestNote,
+		body.NumGuests,
+		body.Source,
+		body.AdminNote,
+	)
+	if err != nil {
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) {
+			c.JSON(appErr.HTTPStatus, gin.H{"error": appErr.Message, "code": appErr.Code})
+			return
+		}
+		h.logger.Error("create_manual_booking failed", slog.Any("error", err))
+		c.JSON(500, gin.H{"error": "Lỗi server, vui lòng thử lại sau"})
+		return
+	}
+
+	c.JSON(201, booking)
+}
