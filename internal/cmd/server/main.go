@@ -79,9 +79,9 @@ func main() {
 
 	pricingUsecase := usecase.NewPricingUsecase(pricingRepository, roomRepository, bookingRepository, logger)
 	roomUsecase := usecase.NewRoomUsecase(roomRepository, blockedRepository, bookingRepository, pricingUsecase, logger)
-	bookingUsecase := usecase.NewBookingUsecase(db, tx, bookingRepository, roomRepository, blockedRepository, paymentRepository, pricingUsecase, notificationService, logger)
-	paymentUsecase := usecase.NewPaymentUsecase(db, tx, paymentRepository, bookingRepository, blockedRepository, bookingUsecase, logger)
-	icalUsecase := usecase.NewIcalUsecase(icalLinkRepository, blockedRepository, bookingRepository, roomRepository, notificationService, icalService, icalSecret, appURL, logger)
+	bookingUsecase := usecase.NewBookingUsecase(tx, bookingRepository, roomRepository, blockedRepository, paymentRepository, pricingUsecase, notificationService, logger)
+	paymentUsecase := usecase.NewPaymentUsecase(tx, paymentRepository, bookingRepository, blockedRepository, bookingUsecase, logger)
+	icalUsecase := usecase.NewIcalUsecase(tx, icalLinkRepository, blockedRepository, bookingRepository, roomRepository, notificationService, icalService, icalSecret, appURL, logger)
 
 	// Scheduler
 	scheduler := jobs.NewScheduler(
