@@ -218,13 +218,12 @@ func (uc *BookingUsecase) ConfirmBooking(ctx context.Context, id uint, adminNote
 			return errors.ErrBookingNotFound
 		}
 
-		if booking.Status != entity.BookingPending {
-			return errors.ErrInvalidStatus
-		}
-
 		uc.normalizeBooking(booking)
 
 		if booking.Status != entity.BookingPending {
+			if booking.Status == entity.BookingExpired {
+				return errors.ErrBookingExpired
+			}
 			return errors.ErrInvalidStatus
 		}
 

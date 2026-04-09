@@ -127,7 +127,7 @@ func (uc *PricingUsecase) resolvePriceForDate(
 			price = rule.PriceModifier
 			fixedApplied = true
 		case entity.ModifierPercent:
-			adjustment := basePrice.Mul(rule.PriceModifier).Div(decimal.NewFromInt(100))
+			adjustment := price.Mul(rule.PriceModifier).Div(decimal.NewFromInt(100))
 			price = price.Add(adjustment)
 		}
 	}

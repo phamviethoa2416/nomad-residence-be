@@ -5,24 +5,24 @@ import (
 	"log/slog"
 	"nomad-residence-be/internal/domain/entity"
 	"nomad-residence-be/internal/domain/filter"
-	"nomad-residence-be/internal/repository"
-	apperrors "nomad-residence-be/pkg/errors"
+	"nomad-residence-be/internal/domain/port"
+	"nomad-residence-be/pkg/errors"
 	"nomad-residence-be/pkg/utils"
 	"time"
 )
 
 type RoomUsecase struct {
-	roomRepo        repository.RoomRepository
-	blockedDateRepo repository.BlockedDateRepository
-	bookingRepo     repository.BookingRepository
+	roomRepo        port.RoomRepository
+	blockedDateRepo port.BlockedDateRepository
+	bookingRepo     port.BookingRepository
 	pricingUsecase  *PricingUsecase
 	logger          *slog.Logger
 }
 
 func NewRoomUsecase(
-	roomRepo repository.RoomRepository,
-	blockedDateRepo repository.BlockedDateRepository,
-	bookingRepo repository.BookingRepository,
+	roomRepo port.RoomRepository,
+	blockedDateRepo port.BlockedDateRepository,
+	bookingRepo port.BookingRepository,
 	pricingUsecase *PricingUsecase,
 	logger *slog.Logger,
 ) *RoomUsecase {
@@ -45,7 +45,7 @@ func (uc *RoomUsecase) GetRoomByID(ctx context.Context, id uint) (*entity.Room, 
 		return nil, err
 	}
 	if room == nil {
-		return nil, apperrors.ErrRoomNotFound
+		return nil, errors.ErrRoomNotFound
 	}
 	return room, nil
 }
@@ -56,7 +56,7 @@ func (uc *RoomUsecase) GetRoomBySlug(ctx context.Context, slug string) (*entity.
 		return nil, err
 	}
 	if room == nil {
-		return nil, apperrors.ErrRoomNotFound
+		return nil, errors.ErrRoomNotFound
 	}
 	return room, nil
 }
@@ -75,7 +75,7 @@ func (uc *RoomUsecase) DeleteRoom(ctx context.Context, id uint) error {
 		return err
 	}
 	if existing == nil {
-		return apperrors.ErrRoomNotFound
+		return errors.ErrRoomNotFound
 	}
 	return uc.roomRepo.Delete(ctx, id)
 }
@@ -86,7 +86,7 @@ func (uc *RoomUsecase) AddImages(ctx context.Context, roomID uint, images []enti
 		return err
 	}
 	if room == nil {
-		return apperrors.ErrRoomNotFound
+		return errors.ErrRoomNotFound
 	}
 
 	for i := range images {
@@ -106,10 +106,7 @@ func (uc *RoomUsecase) SetPrimaryImage(ctx context.Context, roomID, imageID uint
 	return uc.roomRepo.UpdateImageSortOrder(ctx, imageID, 0)
 }
 
-func (uc *RoomUsecase) ReorderImages(ctx context.Context, roomID uint, orders []struct {
-	ID        uint
-	SortOrder int
-}) error {
+func (uc *RoomUsecase) ReorderImages(ctx context.Context, roomID uint, orders []entity.ImageOrder) error {
 	for _, o := range orders {
 		if err := uc.roomRepo.UpdateImageSortOrder(ctx, o.ID, o.SortOrder); err != nil {
 			return err
@@ -118,13 +115,13 @@ func (uc *RoomUsecase) ReorderImages(ctx context.Context, roomID uint, orders []
 	return nil
 }
 
-func (uc *RoomUsecase) ReplaceAmenities(ctx context.Context, roomID uint, amenities []entity.RoomAmenity) error {
+func (uc *RoomUsecase) ReplaceAmenities(ctx context.Context, roomID uint, amenities []entity.Amenity) error {
 	room, err := uc.roomRepo.FindByID(ctx, roomID)
 	if err != nil {
 		return err
 	}
 	if room == nil {
-		return apperrors.ErrRoomNotFound
+		return errors.ErrRoomNotFound
 	}
 	return uc.roomRepo.ReplaceAmenities(ctx, roomID, amenities)
 }
@@ -137,17 +134,11 @@ func (uc *RoomUsecase) CheckAvailability(
 	return uc.bookingRepo.IsAvailable(ctx, roomID, checkin, checkout, nil)
 }
 
-type CalendarDay struct {
-	Date      string `json:"date"`
-	Available bool   `json:"available"`
-	Source    string `json:"source,omitempty"`
-}
-
 func (uc *RoomUsecase) GetRoomCalendar(
 	ctx context.Context,
 	roomID uint,
 	from, to time.Time,
-) ([]CalendarDay, error) {
+) ([]entity.CalendarDay, error) {
 	from = utils.TruncateToDate(from)
 	to = utils.TruncateToDate(to)
 
@@ -163,11 +154,11 @@ func (uc *RoomUsecase) GetRoomCalendar(
 	}
 
 	dates := utils.GetDateRange(from, to)
-	calendar := make([]CalendarDay, 0, len(dates))
+	calendar := make([]entity.CalendarDay, 0, len(dates))
 	for _, date := range dates {
 		key := utils.FormatDate(date)
 		source, blocked := blockedMap[key]
-		calendar = append(calendar, CalendarDay{
+		calendar = append(calendar, entity.CalendarDay{
 			Date:      key,
 			Available: !blocked,
 			Source:    source,
@@ -181,13 +172,13 @@ func (uc *RoomUsecase) GetRoomDetailWithPrice(
 	ctx context.Context,
 	roomID uint,
 	checkin, checkout *time.Time,
-) (*entity.Room, *PriceBreakdown, error) {
+) (*entity.Room, *entity.PriceBreakdown, error) {
 	room, err := uc.roomRepo.FindByID(ctx, roomID)
 	if err != nil {
 		return nil, nil, err
 	}
 	if room == nil {
-		return nil, nil, apperrors.ErrRoomNotFound
+		return nil, nil, errors.ErrRoomNotFound
 	}
 
 	if checkin == nil || checkout == nil {
@@ -206,8 +197,6 @@ func (uc *RoomUsecase) GetRoomDetailWithPrice(
 	return room, breakdown, nil
 }
 
-// ListAvailableRooms returns rooms that are available for the given date range,
-// along with their pricing, filtered by the provided criteria.
 func (uc *RoomUsecase) ListAvailableRooms(
 	ctx context.Context,
 	f filter.RoomFilter,
@@ -243,8 +232,6 @@ func (uc *RoomUsecase) ListAvailableRooms(
 	return available, int64(len(available)), nil
 }
 
-// --- Blocked Dates Management ---
-
 func (uc *RoomUsecase) GetBlockedDates(
 	ctx context.Context,
 	roomID uint,
@@ -259,7 +246,7 @@ func (uc *RoomUsecase) BlockDates(ctx context.Context, roomID uint, dates []time
 		return err
 	}
 	if room == nil {
-		return apperrors.ErrRoomNotFound
+		return errors.ErrRoomNotFound
 	}
 
 	blocked := make([]entity.BlockedDate, 0, len(dates))
