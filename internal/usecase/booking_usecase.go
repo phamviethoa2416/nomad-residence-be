@@ -7,13 +7,12 @@ import (
 	"log/slog"
 	"nomad-residence-be/internal/domain/entity"
 	"nomad-residence-be/internal/domain/filter"
-	"nomad-residence-be/internal/infrastructure/notification"
-	"nomad-residence-be/internal/repository"
-	apperrors "nomad-residence-be/pkg/errors"
+	"nomad-residence-be/internal/domain/port"
+	"nomad-residence-be/pkg/errors"
 	"nomad-residence-be/pkg/utils"
 	"time"
 
-	"gorm.io/datatypes"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -22,35 +21,38 @@ const (
 )
 
 type BookingUsecase struct {
-	db              *gorm.DB
-	bookingRepo     repository.BookingRepository
-	roomRepo        repository.RoomRepository
-	blockedDateRepo repository.BlockedDateRepository
-	paymentRepo     repository.PaymentRepository
-	pricingUsecase  *PricingUsecase
-	notifService    *notification.Service
-	logger          *slog.Logger
+	db                  *gorm.DB
+	tx                  port.TransactionManager
+	bookingRepo         port.BookingRepository
+	roomRepo            port.RoomRepository
+	blockedDateRepo     port.BlockedDateRepository
+	paymentRepo         port.PaymentRepository
+	pricingUsecase      port.PricingUsecase
+	notificationService port.NotificationService
+	logger              *slog.Logger
 }
 
 func NewBookingUsecase(
 	db *gorm.DB,
-	bookingRepo repository.BookingRepository,
-	roomRepo repository.RoomRepository,
-	blockedDateRepo repository.BlockedDateRepository,
-	paymentRepo repository.PaymentRepository,
-	pricingUsecase *PricingUsecase,
-	notifService *notification.Service,
+	tx port.TransactionManager,
+	bookingRepo port.BookingRepository,
+	roomRepo port.RoomRepository,
+	blockedDateRepo port.BlockedDateRepository,
+	paymentRepo port.PaymentRepository,
+	pricingUsecase port.PricingUsecase,
+	notificationService port.NotificationService,
 	logger *slog.Logger,
 ) *BookingUsecase {
 	return &BookingUsecase{
-		db:              db,
-		bookingRepo:     bookingRepo,
-		roomRepo:        roomRepo,
-		blockedDateRepo: blockedDateRepo,
-		paymentRepo:     paymentRepo,
-		pricingUsecase:  pricingUsecase,
-		notifService:    notifService,
-		logger:          logger,
+		db:                  db,
+		tx:                  tx,
+		bookingRepo:         bookingRepo,
+		roomRepo:            roomRepo,
+		blockedDateRepo:     blockedDateRepo,
+		paymentRepo:         paymentRepo,
+		pricingUsecase:      pricingUsecase,
+		notificationService: notificationService,
+		logger:              logger,
 	}
 }
 
@@ -66,20 +68,21 @@ func (uc *BookingUsecase) CreateBooking(
 ) (*entity.Booking, error) {
 	checkin, err := utils.ParseDate(checkinStr)
 	if err != nil {
-		return nil, apperrors.ErrInvalidDates
+		return nil, errors.ErrInvalidDates
 	}
+
 	checkout, err := utils.ParseDate(checkoutStr)
 	if err != nil {
-		return nil, apperrors.ErrInvalidDates
+		return nil, errors.ErrInvalidDates
 	}
 
 	if !checkout.After(checkin) {
-		return nil, apperrors.ErrInvalidDates
+		return nil, errors.ErrInvalidDates
 	}
 
 	today := utils.TruncateToDate(time.Now())
 	if checkin.Before(today) {
-		return nil, apperrors.ErrPastCheckin
+		return nil, errors.ErrPastCheckin
 	}
 
 	room, err := uc.roomRepo.FindByID(ctx, roomID)
@@ -87,19 +90,19 @@ func (uc *BookingUsecase) CreateBooking(
 		return nil, err
 	}
 	if room == nil || room.Status != entity.RoomStatusActive {
-		return nil, apperrors.ErrRoomNotFound
+		return nil, errors.ErrRoomNotFound
 	}
 
 	if numGuests > room.MaxGuests {
-		return nil, apperrors.ErrGuestsExceeded
+		return nil, errors.ErrGuestsExceeded
 	}
 
 	numNights := utils.NightsBetween(checkin, checkout)
 	if numNights < room.MinNights {
-		return nil, apperrors.ErrMinNights
+		return nil, errors.ErrMinNights
 	}
 	if numNights > room.MaxNights {
-		return nil, apperrors.ErrMaxNights
+		return nil, errors.ErrMaxNights
 	}
 
 	breakdown, err := uc.pricingUsecase.CalculatePriceForRoom(ctx, room, checkin, checkout)
@@ -111,7 +114,7 @@ func (uc *BookingUsecase) CreateBooking(
 
 	var booking *entity.Booking
 
-	err = repository.RunInTx(ctx, uc.db, func(txCtx context.Context) error {
+	err = uc.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		if err := uc.bookingRepo.LockRoom(txCtx, roomID); err != nil {
 			return err
 		}
@@ -121,14 +124,14 @@ func (uc *BookingUsecase) CreateBooking(
 			return err
 		}
 		if !available {
-			return apperrors.ErrRoomNotAvailable
+			return errors.ErrRoomNotAvailable
 		}
 
 		now := time.Now()
 		expiresAt := utils.AddMinutes(now, bookingExpiryMinutes)
 
 		booking = &entity.Booking{
-			BookingCode:  generateBookingCode(),
+			BookingCode:  generateBookingCode(now),
 			RoomID:       roomID,
 			GuestName:    guestName,
 			GuestPhone:   guestPhone,
@@ -146,14 +149,15 @@ func (uc *BookingUsecase) CreateBooking(
 			Status:       entity.BookingPending,
 			Source:       entity.BookingSourceWebsite,
 			ExpiresAt:    &expiresAt,
+			RefundStatus: entity.RefundNone,
 		}
 
 		breakdownJSON := json.RawMessage(priceJSON)
-		dtJSON := datatypesJSON(breakdownJSON)
-		booking.PriceBreakdown = &dtJSON
+		booking.PriceBreakdown = &breakdownJSON
 
 		return uc.bookingRepo.Create(txCtx, booking)
 	})
+
 	if err != nil {
 		return nil, err
 	}
@@ -166,19 +170,27 @@ func (uc *BookingUsecase) LookupBooking(ctx context.Context, code, phone string)
 	if err != nil {
 		return nil, err
 	}
-	if booking == nil {
-		return nil, apperrors.ErrBookingNotFound
+	if booking == nil || booking.GuestPhone != phone {
+		return nil, errors.ErrBookingNotFound
 	}
-	if booking.GuestPhone != phone {
-		return nil, apperrors.ErrBookingNotFound
-	}
+
+	uc.normalizeBooking(booking)
+
 	return booking, nil
 }
 
 // --- Admin operations ---
 
 func (uc *BookingUsecase) ListBookings(ctx context.Context, f filter.BookingFilter) ([]entity.Booking, int64, error) {
-	return uc.bookingRepo.FindAll(ctx, f)
+	bookings, total, err := uc.bookingRepo.FindAll(ctx, f)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	for i := range bookings {
+		uc.normalizeBooking(&bookings[i])
+	}
+	return bookings, total, nil
 }
 
 func (uc *BookingUsecase) GetBookingByID(ctx context.Context, id uint) (*entity.Booking, error) {
@@ -187,29 +199,33 @@ func (uc *BookingUsecase) GetBookingByID(ctx context.Context, id uint) (*entity.
 		return nil, err
 	}
 	if booking == nil {
-		return nil, apperrors.ErrBookingNotFound
+		return nil, errors.ErrBookingNotFound
 	}
+
+	uc.normalizeBooking(booking)
 	return booking, nil
 }
 
 func (uc *BookingUsecase) ConfirmBooking(ctx context.Context, id uint, adminNote string) (*entity.Booking, error) {
 	var result *entity.Booking
 
-	err := repository.RunInTx(ctx, uc.db, func(txCtx context.Context) error {
+	err := uc.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		booking, err := uc.bookingRepo.FindByID(txCtx, id)
 		if err != nil {
 			return err
 		}
 		if booking == nil {
-			return apperrors.ErrBookingNotFound
+			return errors.ErrBookingNotFound
 		}
 
 		if booking.Status != entity.BookingPending {
-			return apperrors.ErrInvalidStatus
+			return errors.ErrInvalidStatus
 		}
 
-		if booking.ExpiresAt != nil && booking.ExpiresAt.Before(time.Now()) {
-			return apperrors.ErrBookingExpired
+		uc.normalizeBooking(booking)
+
+		if booking.Status != entity.BookingPending {
+			return errors.ErrInvalidStatus
 		}
 
 		if err := uc.bookingRepo.LockRoom(txCtx, booking.RoomID); err != nil {
@@ -221,16 +237,19 @@ func (uc *BookingUsecase) ConfirmBooking(ctx context.Context, id uint, adminNote
 			booking.CheckinDate, booking.CheckoutDate,
 			&booking.ID,
 		)
+
 		if err != nil {
 			return err
 		}
 		if !available {
-			return apperrors.ErrRoomNotAvailable
+			return errors.ErrRoomNotAvailable
 		}
 
 		now := time.Now()
 		booking.Status = entity.BookingConfirmed
 		booking.ConfirmedAt = &now
+		booking.ExpiresAt = nil
+
 		if adminNote != "" {
 			booking.AdminNote = &adminNote
 		}
@@ -250,7 +269,28 @@ func (uc *BookingUsecase) ConfirmBooking(ctx context.Context, id uint, adminNote
 		return nil, err
 	}
 
-	uc.sendConfirmationNotifications(ctx, result)
+	if uc.notificationService == nil {
+		return result, nil
+	}
+
+	room, err := uc.roomRepo.FindByID(ctx, result.RoomID)
+	if err == nil && room != nil {
+		result.Room = *room
+	}
+
+	if err := uc.notificationService.SendBookingConfirmationEmail(ctx, result); err != nil {
+		uc.logger.Error("failed to send booking confirmation email",
+			slog.Uint64("booking_id", uint64(result.ID)),
+			slog.Any("error", err),
+		)
+	}
+
+	if err := uc.notificationService.NotifyAdminBookingConfirmed(ctx, result); err != nil {
+		uc.logger.Error("failed to send admin telegram notification",
+			slog.Uint64("booking_id", uint64(result.ID)),
+			slog.Any("error", err),
+		)
+	}
 
 	return result, nil
 }
@@ -258,33 +298,64 @@ func (uc *BookingUsecase) ConfirmBooking(ctx context.Context, id uint, adminNote
 func (uc *BookingUsecase) CancelBooking(ctx context.Context, id uint, reason string) (*entity.Booking, error) {
 	var result *entity.Booking
 
-	err := repository.RunInTx(ctx, uc.db, func(txCtx context.Context) error {
+	err := uc.tx.RunInTx(ctx, func(txCtx context.Context) error {
 		booking, err := uc.bookingRepo.FindByID(txCtx, id)
 		if err != nil {
 			return err
 		}
+
 		if booking == nil {
-			return apperrors.ErrBookingNotFound
+			return errors.ErrBookingNotFound
 		}
+		if booking.RefundStatus == "" {
+			booking.RefundStatus = entity.RefundNone
+		}
+		now := time.Now()
+		uc.normalizeBooking(booking)
 
 		if booking.Status != entity.BookingPending && booking.Status != entity.BookingConfirmed {
-			return apperrors.ErrInvalidStatus
+			return errors.ErrInvalidStatus
+		}
+		wasConfirmed := booking.Status == entity.BookingConfirmed
+
+		if err := uc.bookingRepo.LockRoom(txCtx, booking.RoomID); err != nil {
+			return err
 		}
 
-		now := time.Now()
 		booking.Status = entity.BookingCanceled
 		booking.CanceledAt = &now
 		booking.CancelReason = &reason
+		booking.ExpiresAt = nil
+		booking.RequiresRefund = false
+		booking.RefundableAmount = decimal.Zero
+		booking.RefundStatus = entity.RefundNone
+
+		if wasConfirmed {
+			paidAmount, err := uc.calculatePaidAmount(txCtx, booking.ID)
+			if err != nil {
+				return err
+			}
+			if paidAmount.GreaterThan(decimal.Zero) {
+				booking.RequiresRefund = true
+				booking.RefundableAmount = paidAmount
+				booking.RefundStatus = entity.RefundPending
+
+				refundNote := fmt.Sprintf("Refund required: %s VND (manual payout review)", paidAmount.String())
+				if booking.AdminNote == nil || *booking.AdminNote == "" {
+					booking.AdminNote = &refundNote
+				} else {
+					merged := *booking.AdminNote + " | " + refundNote
+					booking.AdminNote = &merged
+				}
+			}
+		}
 
 		if err := uc.bookingRepo.Update(txCtx, booking); err != nil {
 			return err
 		}
 
 		if err := uc.removeBlockedDatesForBooking(txCtx, booking); err != nil {
-			uc.logger.Error("failed to remove blocked dates for canceled booking",
-				slog.Uint64("booking_id", uint64(booking.ID)),
-				slog.Any("error", err),
-			)
+			return err
 		}
 
 		result = booking
@@ -294,7 +365,21 @@ func (uc *BookingUsecase) CancelBooking(ctx context.Context, id uint, reason str
 		return nil, err
 	}
 
-	uc.sendCancellationNotifications(ctx, result)
+	if uc.notificationService == nil {
+		return result, nil
+	}
+
+	room, err := uc.roomRepo.FindByID(ctx, result.RoomID)
+	if err == nil && room != nil {
+		result.Room = *room
+	}
+
+	if err := uc.notificationService.SendBookingCancellationEmail(ctx, result); err != nil {
+		uc.logger.Error("failed to send booking confirmation email",
+			slog.Uint64("booking_id", uint64(result.ID)),
+			slog.Any("error", err),
+		)
+	}
 
 	return result, nil
 }
@@ -321,98 +406,9 @@ func (uc *BookingUsecase) UpdateBookingStatus(
 	case entity.BookingCompleted:
 		return uc.markCompleted(ctx, id)
 	default:
-		return nil, apperrors.ErrInvalidStatus
+		return nil, errors.ErrInvalidStatus
 	}
 }
-
-func (uc *BookingUsecase) CreateManualBooking(
-	ctx context.Context,
-	roomID uint,
-	checkinStr, checkoutStr string,
-	guestName, guestPhone string,
-	guestEmail, guestNote *string,
-	numGuests int,
-	source, adminNote string,
-) (*entity.Booking, error) {
-	checkin, err := utils.ParseDate(checkinStr)
-	if err != nil {
-		return nil, apperrors.ErrInvalidDates
-	}
-	checkout, err := utils.ParseDate(checkoutStr)
-	if err != nil {
-		return nil, apperrors.ErrInvalidDates
-	}
-
-	if !checkout.After(checkin) {
-		return nil, apperrors.ErrInvalidDates
-	}
-
-	room, err := uc.roomRepo.FindByID(ctx, roomID)
-	if err != nil {
-		return nil, err
-	}
-	if room == nil {
-		return nil, apperrors.ErrRoomNotFound
-	}
-
-	numNights := utils.NightsBetween(checkin, checkout)
-
-	breakdown, err := uc.pricingUsecase.CalculatePriceForRoom(ctx, room, checkin, checkout)
-	if err != nil {
-		return nil, err
-	}
-
-	now := time.Now()
-	bookingSource := entity.BookingSource(source)
-	if bookingSource == "" {
-		bookingSource = entity.BookingSourceAdmin
-	}
-
-	booking := &entity.Booking{
-		BookingCode:  generateBookingCode(),
-		RoomID:       roomID,
-		GuestName:    guestName,
-		GuestPhone:   guestPhone,
-		GuestEmail:   guestEmail,
-		GuestNote:    guestNote,
-		CheckinDate:  checkin,
-		CheckoutDate: checkout,
-		NumGuests:    numGuests,
-		NumNights:    numNights,
-		BaseTotal:    breakdown.BaseTotal,
-		CleaningFee:  breakdown.CleaningFee,
-		Discount:     breakdown.Discount,
-		TotalAmount:  breakdown.Total,
-		Currency:     "VND",
-		Status:       entity.BookingConfirmed,
-		Source:       bookingSource,
-		ConfirmedAt:  &now,
-	}
-	if adminNote != "" {
-		booking.AdminNote = &adminNote
-	}
-
-	priceJSON, _ := json.Marshal(breakdown)
-	breakdownJSON := json.RawMessage(priceJSON)
-	dtJSON := datatypesJSON(breakdownJSON)
-	booking.PriceBreakdown = &dtJSON
-
-	err = repository.RunInTx(ctx, uc.db, func(txCtx context.Context) error {
-		if err := uc.bookingRepo.Create(txCtx, booking); err != nil {
-			return err
-		}
-		return uc.createBlockedDatesForBooking(txCtx, booking)
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	uc.sendConfirmationNotifications(ctx, booking)
-
-	return booking, nil
-}
-
-// --- Helpers ---
 
 func (uc *BookingUsecase) createBlockedDatesForBooking(ctx context.Context, booking *entity.Booking) error {
 	dates := utils.GetDateRange(booking.CheckinDate, booking.CheckoutDate)
@@ -442,10 +438,10 @@ func (uc *BookingUsecase) markCompleted(ctx context.Context, id uint) (*entity.B
 		return nil, err
 	}
 	if booking == nil {
-		return nil, apperrors.ErrBookingNotFound
+		return nil, errors.ErrBookingNotFound
 	}
 	if booking.Status != entity.BookingConfirmed {
-		return nil, apperrors.ErrInvalidStatus
+		return nil, errors.ErrInvalidStatus
 	}
 
 	booking.Status = entity.BookingCompleted
@@ -455,58 +451,152 @@ func (uc *BookingUsecase) markCompleted(ctx context.Context, id uint) (*entity.B
 	return booking, nil
 }
 
-func (uc *BookingUsecase) sendConfirmationNotifications(ctx context.Context, booking *entity.Booking) {
-	if uc.notifService == nil {
-		return
+func (uc *BookingUsecase) CreateManualBooking(
+	ctx context.Context,
+	roomID uint,
+	checkinStr, checkoutStr string,
+	guestName, guestPhone string,
+	guestEmail, guestNote *string,
+	numGuests int,
+	source, adminNote string,
+) (*entity.Booking, error) {
+	checkin, err := utils.ParseDate(checkinStr)
+	if err != nil {
+		return nil, errors.ErrInvalidDates
+	}
+	checkout, err := utils.ParseDate(checkoutStr)
+	if err != nil {
+		return nil, errors.ErrInvalidDates
 	}
 
-	room, err := uc.roomRepo.FindByID(ctx, booking.RoomID)
+	if !checkout.After(checkin) {
+		return nil, errors.ErrInvalidDates
+	}
+
+	room, err := uc.roomRepo.FindByID(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if room == nil {
+		return nil, errors.ErrRoomNotFound
+	}
+
+	numNights := utils.NightsBetween(checkin, checkout)
+
+	breakdown, err := uc.pricingUsecase.CalculatePriceForRoom(ctx, room, checkin, checkout)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	bookingSource := entity.BookingSource(source)
+	if bookingSource == "" {
+		bookingSource = entity.BookingSourceAdmin
+	}
+
+	booking := &entity.Booking{
+		BookingCode:  generateBookingCode(now),
+		RoomID:       roomID,
+		GuestName:    guestName,
+		GuestPhone:   guestPhone,
+		GuestEmail:   guestEmail,
+		GuestNote:    guestNote,
+		CheckinDate:  checkin,
+		CheckoutDate: checkout,
+		NumGuests:    numGuests,
+		NumNights:    numNights,
+		BaseTotal:    breakdown.BaseTotal,
+		CleaningFee:  breakdown.CleaningFee,
+		Discount:     breakdown.Discount,
+		TotalAmount:  breakdown.Total,
+		Currency:     "VND",
+		Status:       entity.BookingConfirmed,
+		Source:       bookingSource,
+		ConfirmedAt:  &now,
+		RefundStatus: entity.RefundNone,
+	}
+	if adminNote != "" {
+		booking.AdminNote = &adminNote
+	}
+
+	priceJSON, _ := json.Marshal(breakdown)
+	breakdownJSON := json.RawMessage(priceJSON)
+	booking.PriceBreakdown = &breakdownJSON
+
+	err = uc.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		if err := uc.bookingRepo.LockRoom(txCtx, roomID); err != nil {
+			return err
+		}
+		available, err := uc.bookingRepo.IsAvailable(txCtx, roomID, checkin, checkout, nil)
+		if err != nil {
+			return err
+		}
+		if !available {
+			return errors.ErrRoomNotAvailable
+		}
+
+		if err := uc.bookingRepo.Create(txCtx, booking); err != nil {
+			return err
+		}
+		return uc.createBlockedDatesForBooking(txCtx, booking)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if uc.notificationService == nil {
+		return booking, nil
+	}
+
+	room, err = uc.roomRepo.FindByID(ctx, booking.RoomID)
 	if err == nil && room != nil {
 		booking.Room = *room
 	}
 
-	if err := uc.notifService.SendBookingConfirmationEmail(ctx, booking); err != nil {
+	if err := uc.notificationService.SendBookingConfirmationEmail(ctx, booking); err != nil {
 		uc.logger.Error("failed to send booking confirmation email",
 			slog.Uint64("booking_id", uint64(booking.ID)),
 			slog.Any("error", err),
 		)
 	}
 
-	if err := uc.notifService.NotifyAdminBookingConfirmed(ctx, booking); err != nil {
+	if err := uc.notificationService.NotifyAdminBookingConfirmed(ctx, booking); err != nil {
 		uc.logger.Error("failed to send admin telegram notification",
 			slog.Uint64("booking_id", uint64(booking.ID)),
 			slog.Any("error", err),
 		)
 	}
+
+	return booking, nil
 }
 
-func (uc *BookingUsecase) sendCancellationNotifications(ctx context.Context, booking *entity.Booking) {
-	if uc.notifService == nil {
+func (uc *BookingUsecase) normalizeBooking(booking *entity.Booking) {
+	if booking == nil {
 		return
 	}
-
-	room, err := uc.roomRepo.FindByID(ctx, booking.RoomID)
-	if err == nil && room != nil {
-		booking.Room = *room
+	if booking.RefundStatus == "" {
+		booking.RefundStatus = entity.RefundNone
 	}
-
-	if err := uc.notifService.SendBookingCancellationEmail(ctx, booking); err != nil {
-		uc.logger.Error("failed to send booking cancellation email",
-			slog.Uint64("booking_id", uint64(booking.ID)),
-			slog.Any("error", err),
-		)
+	if booking.Status == entity.BookingPending && booking.ExpiresAt != nil && booking.ExpiresAt.Before(time.Now()) {
+		booking.Status = entity.BookingExpired
 	}
 }
 
-func generateBookingCode() string {
-	now := time.Now()
-	return fmt.Sprintf("NR%s%04d",
-		now.Format("060102"),
-		now.UnixNano()%10000,
-	)
+func (uc *BookingUsecase) calculatePaidAmount(ctx context.Context, bookingID uint) (decimal.Decimal, error) {
+	payments, err := uc.paymentRepo.FindByBookingID(ctx, bookingID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+
+	total := decimal.Zero
+	for _, p := range payments {
+		if p.Status == entity.PaymentPaid {
+			total = total.Add(p.Amount)
+		}
+	}
+	return total, nil
 }
 
-// datatypesJSON converts json.RawMessage into gorm datatypes.JSON.
-func datatypesJSON(raw json.RawMessage) datatypes.JSON {
-	return datatypes.JSON(raw)
+func generateBookingCode(now time.Time) string {
+	return fmt.Sprintf("NR%s%04d", now.Format("060102"), now.UnixNano()%10000)
 }
