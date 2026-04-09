@@ -31,7 +31,7 @@ type RoomUsecase interface {
 	DeleteImage(ctx context.Context, imageID uint) error
 	SetPrimaryImage(ctx context.Context, roomID, imageID uint) error
 	ReorderImages(ctx context.Context, roomID uint, orders []entity.ImageOrder) error
-	ReplaceAmenities(ctx context.Context, roomID uint, amenities []entity.RoomAmenity) error
+	ReplaceAmenities(ctx context.Context, roomID uint, amenities []entity.Amenity) error
 	CheckAvailability(ctx context.Context, roomID uint, checkin, checkout time.Time) (bool, error)
 	GetRoomCalendar(ctx context.Context, roomID uint, from, to time.Time) ([]entity.CalendarDay, error)
 	GetRoomDetailWithPrice(ctx context.Context, roomID uint, checkin, checkout *time.Time) (*entity.Room, *entity.PriceBreakdown, error)
