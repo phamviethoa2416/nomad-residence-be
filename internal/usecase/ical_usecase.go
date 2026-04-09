@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"nomad-residence-be/internal/domain/entity"
 	"nomad-residence-be/internal/domain/port"
-	"nomad-residence-be/internal/infrastructure/notification"
 	"nomad-residence-be/pkg/errors"
 	"nomad-residence-be/pkg/utils"
 	"time"
@@ -15,11 +14,12 @@ import (
 )
 
 type IcalUsecase struct {
+	tx           port.TransactionManager
 	icalLinkRepo port.IcalLinkRepository
 	blockedRepo  port.BlockedDateRepository
 	bookingRepo  port.BookingRepository
 	roomRepo     port.RoomRepository
-	notif        *notification.Service
+	notif        port.NotificationService
 	fetcher      port.IcalFetcher
 	tokenSecret  string
 	appURL       string
@@ -27,17 +27,19 @@ type IcalUsecase struct {
 }
 
 func NewIcalUsecase(
+	tx port.TransactionManager,
 	icalLinkRepo port.IcalLinkRepository,
 	blockedRepo port.BlockedDateRepository,
 	bookingRepo port.BookingRepository,
 	roomRepo port.RoomRepository,
-	notif *notification.Service,
+	notif port.NotificationService,
 	fetcher port.IcalFetcher,
 	tokenSecret string,
 	appURL string,
 	logger *slog.Logger,
 ) *IcalUsecase {
 	return &IcalUsecase{
+		tx:           tx,
 		icalLinkRepo: icalLinkRepo,
 		blockedRepo:  blockedRepo,
 		bookingRepo:  bookingRepo,
@@ -126,16 +128,20 @@ func (u *IcalUsecase) SyncSingleLinkByID(ctx context.Context, linkID uint) (*ent
 
 	source := "ota_" + link.Platform
 
-	// Tính toán dates từ VEVENT
 	newDates := u.extractDatesFromCalendar(cal, link.RoomID, link.Platform)
 
-	// Xóa dates cũ của platform này
-	_ = u.blockedRepo.DeleteByRoomAndSource(ctx, link.RoomID, source)
-
-	if len(newDates) > 0 {
-		if err := u.blockedRepo.BulkCreate(ctx, newDates); err != nil {
-			return nil, err
+	if err := u.tx.RunInTx(ctx, func(txCtx context.Context) error {
+		if err := u.blockedRepo.DeleteByRoomAndSource(txCtx, link.RoomID, source); err != nil {
+			return err
 		}
+		if len(newDates) > 0 {
+			if err := u.blockedRepo.BulkCreate(txCtx, newDates); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	if len(newDates) == 0 {
