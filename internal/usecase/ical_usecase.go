@@ -3,351 +3,302 @@ package usecase
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"nomad-residence-be/internal/domain/entity"
-	"nomad-residence-be/internal/repository"
-	apperrors "nomad-residence-be/pkg/errors"
+	"nomad-residence-be/internal/domain/port"
+	"nomad-residence-be/internal/infrastructure/notification"
+	"nomad-residence-be/pkg/errors"
 	"nomad-residence-be/pkg/utils"
-	"strings"
 	"time"
 
-	ics "github.com/arran4/golang-ical"
+	"github.com/arran4/golang-ical"
 )
 
-type IcalSyncResult struct {
-	LinkID   uint   `json:"link_id"`
-	RoomID   uint   `json:"room_id"`
-	Platform string `json:"platform"`
-	Success  bool   `json:"success"`
-	Error    string `json:"error,omitempty"`
-	Imported int    `json:"imported"`
-}
-
 type IcalUsecase struct {
-	icalRepo        repository.IcalLinkRepository
-	blockedDateRepo repository.BlockedDateRepository
-	bookingRepo     repository.BookingRepository
-	roomRepo        repository.RoomRepository
-	logger          *slog.Logger
-	httpClient      *http.Client
+	icalLinkRepo port.IcalLinkRepository
+	blockedRepo  port.BlockedDateRepository
+	bookingRepo  port.BookingRepository
+	roomRepo     port.RoomRepository
+	notif        *notification.Service
+	fetcher      port.IcalFetcher
+	tokenSecret  string
+	appURL       string
+	logger       *slog.Logger
 }
 
 func NewIcalUsecase(
-	icalRepo repository.IcalLinkRepository,
-	blockedDateRepo repository.BlockedDateRepository,
-	bookingRepo repository.BookingRepository,
-	roomRepo repository.RoomRepository,
+	icalLinkRepo port.IcalLinkRepository,
+	blockedRepo port.BlockedDateRepository,
+	bookingRepo port.BookingRepository,
+	roomRepo port.RoomRepository,
+	notif *notification.Service,
+	fetcher port.IcalFetcher,
+	tokenSecret string,
+	appURL string,
 	logger *slog.Logger,
 ) *IcalUsecase {
 	return &IcalUsecase{
-		icalRepo:        icalRepo,
-		blockedDateRepo: blockedDateRepo,
-		bookingRepo:     bookingRepo,
-		roomRepo:        roomRepo,
-		logger:          logger,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		icalLinkRepo: icalLinkRepo,
+		blockedRepo:  blockedRepo,
+		bookingRepo:  bookingRepo,
+		roomRepo:     roomRepo,
+		notif:        notif,
+		fetcher:      fetcher,
+		tokenSecret:  tokenSecret,
+		appURL:       appURL,
+		logger:       logger,
 	}
 }
 
-// --- CRUD operations ---
-
-func (uc *IcalUsecase) GetLinksByRoomID(ctx context.Context, roomID uint) ([]entity.IcalLink, error) {
-	return uc.icalRepo.FindByRoomID(ctx, roomID)
-}
-
-func (uc *IcalUsecase) GetLinkByID(ctx context.Context, id uint) (*entity.IcalLink, error) {
-	link, err := uc.icalRepo.FindByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if link == nil {
-		return nil, apperrors.ErrIcalLinkNotFound
-	}
-	return link, nil
-}
-
-func (uc *IcalUsecase) CreateLink(ctx context.Context, link *entity.IcalLink) error {
-	return uc.icalRepo.Create(ctx, link)
-}
-
-func (uc *IcalUsecase) UpdateLink(ctx context.Context, link *entity.IcalLink) error {
-	return uc.icalRepo.Update(ctx, link)
-}
-
-func (uc *IcalUsecase) DeleteLink(ctx context.Context, id uint) error {
-	link, err := uc.icalRepo.FindByID(ctx, id)
-	if err != nil {
-		return err
-	}
-	if link == nil {
-		return apperrors.ErrIcalLinkNotFound
-	}
-
-	if link.ImportURL != nil {
-		srcKey := fmt.Sprintf("%s:ical_%d", entity.BlockIcal, link.ID)
-		if err := uc.blockedDateRepo.DeleteByRoomAndSource(ctx, link.RoomID, srcKey); err != nil {
-			uc.logger.Warn("failed to clean up blocked dates for deleted ical link",
-				slog.Uint64("link_id", uint64(id)),
-				slog.Any("error", err),
-			)
-		}
-	}
-
-	return uc.icalRepo.Delete(ctx, id)
-}
-
-// --- Sync operations ---
-
-// SyncAllIcalLinks fetches and processes all active iCal import links.
-// This is called by the cron job scheduler.
-func (uc *IcalUsecase) SyncAllIcalLinks(ctx context.Context) []IcalSyncResult {
-	links, err := uc.icalRepo.FindActiveImportLinks(ctx)
-	if err != nil {
-		uc.logger.Error("failed to fetch active ical links", slog.Any("error", err))
-		return nil
-	}
-
-	results := make([]IcalSyncResult, 0, len(links))
-	for _, link := range links {
-		result := uc.syncSingleLink(ctx, &link)
-		results = append(results, result)
-	}
-
-	return results
-}
-
-// SyncSingleLinkByID triggers a sync for a specific iCal link.
-func (uc *IcalUsecase) SyncSingleLinkByID(ctx context.Context, linkID uint) (*IcalSyncResult, error) {
-	link, err := uc.icalRepo.FindByID(ctx, linkID)
-	if err != nil {
-		return nil, err
-	}
-	if link == nil {
-		return nil, apperrors.ErrIcalLinkNotFound
-	}
-	if link.ImportURL == nil || *link.ImportURL == "" {
-		return nil, apperrors.New(400, "NO_IMPORT_URL", "Link không có URL import")
-	}
-
-	result := uc.syncSingleLink(ctx, link)
-	return &result, nil
-}
-
-func (uc *IcalUsecase) syncSingleLink(ctx context.Context, link *entity.IcalLink) IcalSyncResult {
-	result := IcalSyncResult{
-		LinkID:   link.ID,
-		RoomID:   link.RoomID,
-		Platform: link.Platform,
-	}
-
-	link.SyncStatus = entity.IcalSyncing
-	_ = uc.icalRepo.Update(ctx, link)
-
-	events, err := uc.fetchAndParseIcal(ctx, *link.ImportURL)
-	if err != nil {
-		result.Error = err.Error()
-		uc.markSyncError(ctx, link, err.Error())
-		return result
-	}
-
-	sourceKey := fmt.Sprintf("%s:ical_%d", entity.BlockIcal, link.ID)
-	if err := uc.blockedDateRepo.DeleteByRoomAndSource(ctx, link.RoomID, sourceKey); err != nil {
-		uc.logger.Error("failed to clear old ical blocked dates",
-			slog.Uint64("link_id", uint64(link.ID)),
-			slog.Any("error", err),
-		)
-	}
-
-	blockedDates := uc.eventsToBlockedDates(link.RoomID, link.ID, events)
-	if len(blockedDates) > 0 {
-		if err := uc.blockedDateRepo.BulkCreate(ctx, blockedDates); err != nil {
-			result.Error = err.Error()
-			uc.markSyncError(ctx, link, err.Error())
-			return result
-		}
-	}
-
-	result.Success = true
-	result.Imported = len(blockedDates)
-
-	now := time.Now()
-	link.SyncStatus = entity.IcalIdle
-	link.LastSyncedAt = &now
-	link.SyncError = nil
-	_ = uc.icalRepo.Update(ctx, link)
-
-	uc.logger.Info("iCal sync completed",
-		slog.Uint64("link_id", uint64(link.ID)),
-		slog.String("platform", link.Platform),
-		slog.Int("imported", len(blockedDates)),
-	)
-
-	return result
-}
-
-func (uc *IcalUsecase) fetchAndParseIcal(ctx context.Context, url string) ([]*ics.VEvent, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("User-Agent", "NomadResidence/1.0 iCal-Sync")
-
-	resp, err := uc.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch ical: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ical fetch returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read ical body: %w", err)
-	}
-
-	cal, err := ics.ParseCalendar(strings.NewReader(string(body)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse ical: %w", err)
-	}
-
-	return cal.Events(), nil
-}
-
-func (uc *IcalUsecase) eventsToBlockedDates(roomID uint, linkID uint, events []*ics.VEvent) []entity.BlockedDate {
-	var blocked []entity.BlockedDate
-	sourceRef := fmt.Sprintf("ical_%d", linkID)
-	now := utils.TruncateToDate(time.Now())
-
-	for _, event := range events {
-		dtStart, err := event.GetStartAt()
-		if err != nil {
-			continue
-		}
-		dtEnd, err := event.GetEndAt()
-		if err != nil {
-			dtEnd = dtStart.AddDate(0, 0, 1)
-		}
-
-		if dtEnd.Before(now) {
-			continue
-		}
-
-		summary := ""
-		if prop := event.GetProperty(ics.ComponentPropertySummary); prop != nil {
-			summary = prop.Value
-		}
-
-		dates := utils.GetDateRange(dtStart, dtEnd)
-		for _, d := range dates {
-			if d.Before(now) {
-				continue
-			}
-			reason := summary
-			blocked = append(blocked, entity.BlockedDate{
-				RoomID:    roomID,
-				Date:      d,
-				Source:    entity.BlockIcal,
-				SourceRef: &sourceRef,
-				Reason:    &reason,
-			})
-		}
-	}
-
-	return blocked
-}
-
-func (uc *IcalUsecase) markSyncError(ctx context.Context, link *entity.IcalLink, errMsg string) {
-	link.SyncStatus = entity.IcalError
-	link.SyncError = &errMsg
-	if err := uc.icalRepo.Update(ctx, link); err != nil {
-		uc.logger.Error("failed to update ical link sync error",
-			slog.Uint64("link_id", uint64(link.ID)),
-			slog.Any("error", err),
-		)
-	}
-}
-
-// --- Export ---
-
-// ExportRoomIcal generates an iCal feed for a room's confirmed bookings and blocked dates.
-func (uc *IcalUsecase) ExportRoomIcal(ctx context.Context, roomID uint) (string, error) {
-	room, err := uc.roomRepo.FindByID(ctx, roomID)
+func (u *IcalUsecase) ExportRoomIcal(ctx context.Context, roomID uint) (string, error) {
+	room, err := u.roomRepo.FindByID(ctx, roomID)
 	if err != nil {
 		return "", err
 	}
 	if room == nil {
-		return "", apperrors.ErrRoomNotFound
+		return "", errors.ErrRoomNotFound
 	}
 
-	now := time.Now()
-	from := utils.TruncateToDate(now)
-	to := from.AddDate(1, 0, 0)
+	filter := struct {
+		RoomID uint
+		Status []string
+	}{RoomID: roomID}
+	_ = filter
 
-	blockedDates, err := uc.blockedDateRepo.FindByRoomAndRange(ctx, roomID, from, to)
+	cal := ics.NewCalendar()
+	cal.SetMethod(ics.MethodPublish)
+	cal.SetXWRCalName(room.Name)
+
+	blocked, err := u.blockedRepo.FindByRoomAndRange(ctx, roomID, time.Now().AddDate(-1, 0, 0), time.Now().AddDate(2, 0, 0))
 	if err != nil {
 		return "", err
 	}
 
-	cal := ics.NewCalendar()
-	cal.SetMethod(ics.MethodPublish)
-	cal.SetProductId(fmt.Sprintf("-//Nomad Residence//%s//EN", room.Name))
-	cal.SetName(fmt.Sprintf("Nomad Residence - %s", room.Name))
-
-	dateRanges := uc.mergeDateRanges(blockedDates)
-	for i, dr := range dateRanges {
-		event := cal.AddEvent(fmt.Sprintf("blocked-%d-%d@nomadresidence", roomID, i))
-		event.SetCreatedTime(now)
-		event.SetDtStampTime(now)
-		event.SetAllDayStartAt(dr.Start)
-		event.SetAllDayEndAt(dr.End.AddDate(0, 0, 1))
-		event.SetSummary(fmt.Sprintf("Blocked - %s", room.Name))
-		event.SetStatus("CONFIRMED")
+	for _, b := range blocked {
+		event := cal.AddEvent(fmt.Sprintf("%d-%s", roomID, utils.FormatDate(b.Date)))
+		event.SetSummary("Blocked")
+		event.SetDtStampTime(b.Date)
+		event.SetStartAt(b.Date)
+		event.SetEndAt(b.Date.AddDate(0, 0, 1))
+		if b.Reason != nil {
+			event.SetDescription(*b.Reason)
+		}
 	}
 
 	return cal.Serialize(), nil
 }
 
-type dateRange struct {
-	Start  time.Time
-	End    time.Time
-	Source entity.BlockSource
+func (u *IcalUsecase) SyncSingleLinkByID(ctx context.Context, linkID uint) (*entity.IcalSyncResult, error) {
+	link, err := u.icalLinkRepo.FindByID(ctx, linkID)
+	if err != nil {
+		return nil, err
+	}
+	if link == nil {
+		return nil, errors.ErrIcalLinkNotFound
+	}
+	if link.ImportURL == nil {
+		return &entity.IcalSyncResult{LinkID: linkID, RoomID: link.RoomID, Platform: link.Platform, Success: false, Error: "no import URL configured"}, nil
+	}
+
+	link.SyncStatus = entity.IcalSyncing
+	_ = u.icalLinkRepo.Update(ctx, link)
+
+	cal, err := u.fetcher.FetchFromURL(ctx, *link.ImportURL)
+	if err != nil {
+		syncErr := err.Error()
+		link.SyncStatus = entity.IcalError
+		link.SyncError = &syncErr
+		_ = u.icalLinkRepo.Update(ctx, link)
+
+		room, _ := u.roomRepo.FindByID(ctx, link.RoomID)
+		roomName := ""
+		if room != nil {
+			roomName = room.Name
+		}
+		if u.notif != nil {
+			_ = u.notif.SendTelegram(ctx, fmt.Sprintf(
+				"❌ <b>LỖI ĐỒNG BỘ iCal</b>\n\nPlatform: %s\nPhòng: %s\nLỗi: %s",
+				link.Platform, roomName, syncErr,
+			))
+		}
+		return nil, err
+	}
+
+	source := "ota_" + link.Platform
+
+	// Tính toán dates từ VEVENT
+	newDates := u.extractDatesFromCalendar(cal, link.RoomID, link.Platform)
+
+	// Xóa dates cũ của platform này
+	_ = u.blockedRepo.DeleteByRoomAndSource(ctx, link.RoomID, source)
+
+	if len(newDates) > 0 {
+		if err := u.blockedRepo.BulkCreate(ctx, newDates); err != nil {
+			return nil, err
+		}
+	}
+
+	if len(newDates) == 0 {
+		now := time.Now()
+		link.SyncStatus = entity.IcalIdle
+		link.LastSyncedAt = &now
+		link.SyncError = nil
+		_ = u.icalLinkRepo.Update(ctx, link)
+
+		return &entity.IcalSyncResult{
+			LinkID:   linkID,
+			RoomID:   link.RoomID,
+			Platform: link.Platform,
+			Success:  true,
+			Imported: 0,
+		}, nil
+	}
+
+	minDate := newDates[0].Date
+	maxDate := newDates[0].Date
+	for _, d := range newDates {
+		if d.Date.Before(minDate) {
+			minDate = d.Date
+		}
+		if d.Date.After(maxDate) {
+			maxDate = d.Date
+		}
+	}
+
+	dateSet := make(map[string]bool, len(newDates))
+	for _, d := range newDates {
+		dateSet[utils.FormatDate(d.Date)] = true
+	}
+
+	bookings, err := u.bookingRepo.FindConfirmedOverlapping(ctx, link.RoomID, minDate, maxDate)
+	if err != nil {
+		return nil, err
+	}
+	conflictDates := make([]time.Time, 0)
+	seen := make(map[string]bool, 16)
+	for _, bk := range bookings {
+		dates := utils.GetDateRange(bk.CheckinDate, bk.CheckoutDate)
+		for _, d := range dates {
+			key := utils.FormatDate(d)
+			if !dateSet[key] || seen[key] {
+				continue
+			}
+			seen[key] = true
+			conflictDates = append(conflictDates, d)
+		}
+	}
+
+	if len(conflictDates) > 0 {
+		dateStrs := make([]string, len(conflictDates))
+		for i, d := range conflictDates {
+			dateStrs[i] = utils.FormatDate(d)
+		}
+		room, _ := u.roomRepo.FindByID(ctx, link.RoomID)
+		if u.notif != nil && room != nil {
+			_ = u.notif.SendTelegram(ctx, fmt.Sprintf(
+				"⚠️ <b>XUNG ĐỘT LỊCH iCal!</b>\n\n🏡 Phòng: %s\n📅 Ngày xung đột: %v\n\nVui lòng kiểm tra và xử lý thủ công!",
+				room.Name, dateStrs,
+			))
+		}
+	}
+
+	now := time.Now()
+	link.SyncStatus = entity.IcalIdle
+	link.LastSyncedAt = &now
+	link.SyncError = nil
+	_ = u.icalLinkRepo.Update(ctx, link)
+
+	return &entity.IcalSyncResult{
+		LinkID:   linkID,
+		RoomID:   link.RoomID,
+		Platform: link.Platform,
+		Success:  true,
+		Imported: len(newDates),
+	}, nil
 }
 
-// mergeDateRanges groups consecutive blocked dates into ranges for cleaner iCal export.
-func (uc *IcalUsecase) mergeDateRanges(dates []entity.BlockedDate) []dateRange {
-	if len(dates) == 0 {
+func (u *IcalUsecase) SyncAllIcalLinks(ctx context.Context) []entity.IcalSyncResult {
+	links, err := u.icalLinkRepo.FindActiveImportLinks(ctx)
+	if err != nil {
 		return nil
 	}
 
-	ranges := make([]dateRange, 0)
-	current := dateRange{
-		Start:  dates[0].Date,
-		End:    dates[0].Date,
-		Source: dates[0].Source,
-	}
-
-	for i := 1; i < len(dates); i++ {
-		d := dates[i]
-		nextDay := current.End.AddDate(0, 0, 1)
-
-		if d.Date.Equal(nextDay) && d.Source == current.Source {
-			current.End = d.Date
+	results := make([]entity.IcalSyncResult, 0, len(links))
+	for _, link := range links {
+		result, err := u.SyncSingleLinkByID(ctx, link.ID)
+		if err != nil {
+			results = append(results, entity.IcalSyncResult{LinkID: link.ID, RoomID: link.RoomID, Platform: link.Platform, Success: false, Error: err.Error()})
 		} else {
-			ranges = append(ranges, current)
-			current = dateRange{
-				Start:  d.Date,
-				End:    d.Date,
-				Source: d.Source,
-			}
+			results = append(results, *result)
 		}
 	}
-	ranges = append(ranges, current)
+	return results
+}
 
-	return ranges
+func (u *IcalUsecase) GetLinksByRoomID(ctx context.Context, roomID uint) ([]entity.IcalLink, error) {
+	return u.icalLinkRepo.FindByRoomID(ctx, roomID)
+}
+
+func (u *IcalUsecase) GetLinkByID(ctx context.Context, id uint) (*entity.IcalLink, error) {
+	return u.icalLinkRepo.FindByID(ctx, id)
+}
+
+func (u *IcalUsecase) CreateLink(ctx context.Context, link *entity.IcalLink) error {
+	return u.icalLinkRepo.Create(ctx, link)
+}
+
+func (u *IcalUsecase) UpdateLink(ctx context.Context, link *entity.IcalLink) error {
+	return u.icalLinkRepo.Update(ctx, link)
+}
+
+func (u *IcalUsecase) DeleteLink(ctx context.Context, id uint) error {
+	return u.icalLinkRepo.Delete(ctx, id)
+}
+
+func (u *IcalUsecase) extractDatesFromCalendar(cal *ics.Calendar, roomID uint, platform string) []entity.BlockedDate {
+	source := "ota_" + platform
+	var result []entity.BlockedDate
+
+	for _, component := range cal.Components {
+		event, ok := component.(*ics.VEvent)
+		if !ok {
+			continue
+		}
+		start, err1 := event.GetStartAt()
+		end, err2 := event.GetEndAt()
+		if err1 != nil || err2 != nil {
+			continue
+		}
+
+		uid := event.GetProperty(ics.ComponentPropertyUniqueId)
+		var sourceRef *string
+		if uid != nil {
+			s := uid.Value
+			sourceRef = &s
+		}
+
+		summary := ""
+		if sp := event.GetProperty(ics.ComponentPropertySummary); sp != nil {
+			summary = sp.Value
+		}
+
+		reason := fmt.Sprintf("Blocked via %s", platform)
+		if summary != "" {
+			reason = summary
+		}
+		reasonCopy := reason
+
+		dates := utils.GetDateRange(start, end)
+		for _, d := range dates {
+			dd := d
+			result = append(result, entity.BlockedDate{
+				RoomID:    roomID,
+				Date:      dd,
+				Source:    entity.BlockSource(source),
+				SourceRef: sourceRef,
+				Reason:    &reasonCopy,
+			})
+		}
+	}
+	return result
 }
