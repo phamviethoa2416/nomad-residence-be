@@ -145,7 +145,10 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 		return
 	}
 
+	now := time.Now()
 	admin.PasswordHash = string(hashed)
+	admin.UpdatedAt = now
+	admin.PasswordChangedAt = &now
 	if err := h.adminRepo.Update(c.Request.Context(), admin); err != nil {
 		h.logger.Error("change_password: update failed", slog.Any("error", err))
 		c.JSON(500, gin.H{"error": "Lỗi server, vui lòng thử lại sau"})
