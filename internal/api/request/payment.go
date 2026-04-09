@@ -1,6 +1,10 @@
 package request
 
-import "github.com/shopspring/decimal"
+import (
+	"encoding/json"
+
+	"github.com/shopspring/decimal"
+)
 
 type PaymentBookingCodeQuery struct {
 	BookingCode string `form:"booking_code" binding:"required,min=1"`
@@ -20,11 +24,11 @@ func (q *PaymentBookingCodeQuery) Normalize() {
 }
 
 type VietQRWebhookBody struct {
-	TransactionID string  `json:"transaction_id"`
-	Amount        float64 `json:"amount"`
-	Content       string  `json:"content"`
-	BankAccount   string  `json:"bank_account"`
-	OrderID       string  `json:"orderId"`
+	TransactionID string      `json:"transaction_id"`
+	Amount        json.Number `json:"amount"`
+	Content       string      `json:"content"`
+	BankAccount   string      `json:"bank_account"`
+	OrderID       string      `json:"orderId"`
 }
 
 type CreatePaymentRequest struct {

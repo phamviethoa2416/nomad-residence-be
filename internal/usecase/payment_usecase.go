@@ -13,30 +13,33 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"gorm.io/gorm"
 )
 
+var validTransitions = map[entity.PaymentStatus][]entity.PaymentStatus{
+	entity.PaymentPending:  {entity.PaymentPaid, entity.PaymentFailed},
+	entity.PaymentPaid:     {entity.PaymentRefunded},
+	entity.PaymentFailed:   {entity.PaymentPending},
+	entity.PaymentRefunded: {},
+}
+
 type PaymentUsecase struct {
-	db              *gorm.DB
 	tx              port.TransactionManager
 	paymentRepo     port.PaymentRepository
 	bookingRepo     port.BookingRepository
 	blockedDateRepo port.BlockedDateRepository
-	bookingUsecase  *BookingUsecase
+	bookingUsecase  port.BookingUsecase
 	logger          *slog.Logger
 }
 
 func NewPaymentUsecase(
-	db *gorm.DB,
 	tx port.TransactionManager,
 	paymentRepo port.PaymentRepository,
 	bookingRepo port.BookingRepository,
 	blockedDateRepo port.BlockedDateRepository,
-	bookingUsecase *BookingUsecase,
+	bookingUsecase port.BookingUsecase,
 	logger *slog.Logger,
 ) *PaymentUsecase {
 	return &PaymentUsecase{
-		db:              db,
 		tx:              tx,
 		paymentRepo:     paymentRepo,
 		bookingRepo:     bookingRepo,
@@ -260,21 +263,33 @@ func (uc *PaymentUsecase) UpdatePaymentStatus(
 		return nil, errors.ErrPaymentNotFound
 	}
 
-	payment.Status = entity.PaymentStatus(status)
+	newStatus := entity.PaymentStatus(status)
+	if !isValidTransition(payment.Status, newStatus) {
+		return nil, errors.ErrInvalidPaymentTransition
+	}
+
+	payment.Status = newStatus
+
 	if adminNote != nil {
 		payment.AdminNote = adminNote
 	}
 
-	if status == string(entity.PaymentPaid) {
-		now := time.Now()
-		payment.PaidAt = &now
+	now := time.Now()
+
+	switch newStatus {
+	case entity.PaymentPaid:
+		if payment.PaidAt == nil {
+			payment.PaidAt = &now
+		}
+
+	case entity.PaymentRefunded:
 	}
 
 	if err := uc.paymentRepo.Update(ctx, payment); err != nil {
 		return nil, err
 	}
 
-	if payment.Status == entity.PaymentPaid {
+	if newStatus == entity.PaymentPaid {
 		booking, bErr := uc.bookingRepo.FindByID(ctx, payment.BookingID)
 		if bErr == nil && booking != nil && booking.Status == entity.BookingPending {
 			if _, err := uc.bookingUsecase.ConfirmBooking(ctx, booking.ID, "Tự động xác nhận qua thanh toán"); err != nil {
@@ -344,4 +359,17 @@ func (uc *PaymentUsecase) confirmLockedBooking(ctx context.Context, booking *ent
 	}
 
 	return uc.blockedDateRepo.BulkCreate(ctx, blocked)
+}
+
+func isValidTransition(from, to entity.PaymentStatus) bool {
+	allowed, ok := validTransitions[from]
+	if !ok {
+		return false
+	}
+	for _, s := range allowed {
+		if s == to {
+			return true
+		}
+	}
+	return false
 }

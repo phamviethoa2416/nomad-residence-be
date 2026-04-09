@@ -1,9 +1,11 @@
 package public
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"nomad-residence-be/internal/api/request"
+	"nomad-residence-be/internal/domain/entity"
 	"nomad-residence-be/internal/domain/port"
 	apperrors "nomad-residence-be/pkg/errors"
 	"time"
@@ -120,11 +122,11 @@ func (h *PaymentHandler) VietQRWebhook(c *gin.Context) {
 	}
 
 	var body struct {
-		TransactionID string  `json:"transactionid"`
-		Amount        float64 `json:"amount"`
-		Content       string  `json:"content"`
-		BankAccount   string  `json:"bankaccount"`
-		OrderID       string  `json:"orderId"`
+		TransactionID string      `json:"transactionid"`
+		Amount        json.Number `json:"amount"`
+		Content       string      `json:"content"`
+		BankAccount   string      `json:"bankaccount"`
+		OrderID       string      `json:"orderId"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.TransactionID == "" {
 		c.JSON(200, gin.H{
@@ -136,7 +138,17 @@ func (h *PaymentHandler) VietQRWebhook(c *gin.Context) {
 		return
 	}
 
-	// Ưu tiên content, fallback orderId để extract booking code
+	amount, err := decimal.NewFromString(body.Amount.String())
+	if err != nil {
+		c.JSON(200, gin.H{
+			"error":        true,
+			"errorReason":  "INVALID_AMOUNT",
+			"toastMessage": "Số tiền không hợp lệ",
+			"object":       nil,
+		})
+		return
+	}
+
 	content := body.Content
 	if content == "" {
 		content = body.OrderID
@@ -144,10 +156,10 @@ func (h *PaymentHandler) VietQRWebhook(c *gin.Context) {
 
 	ref := gin.H{"reftransactionid": body.TransactionID}
 
-	err := h.paymentUsecase.HandleVietQRWebhook(
+	err = h.paymentUsecase.HandleVietQRWebhook(
 		c.Request.Context(),
 		body.TransactionID,
-		decimal.NewFromFloat(body.Amount),
+		amount,
 		content,
 	)
 	if err != nil {
@@ -216,7 +228,7 @@ func (h *PaymentHandler) CheckPaymentStatus(c *gin.Context) {
 		return
 	}
 
-	isExpired := string(booking.Status) == "canceled"
+	isExpired := booking.Status == entity.BookingCanceled
 	if !isExpired && booking.ExpiresAt != nil {
 		isExpired = time.Now().After(*booking.ExpiresAt)
 	}
@@ -224,7 +236,7 @@ func (h *PaymentHandler) CheckPaymentStatus(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"booking_code": booking.BookingCode,
 		"status":       booking.Status,
-		"is_paid":      string(booking.Status) == "confirmed",
+		"is_paid":      booking.Status == entity.BookingConfirmed,
 		"is_expired":   isExpired,
 		"confirmed_at": booking.ConfirmedAt,
 		"total_amount": booking.TotalAmount,
