@@ -1,0 +1,44 @@
+# VCS
+.git
+.gitignore
+
+# Docker
+Dockerfile*
+.dockerignore
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build outputs / binaries
+bin/
+dist/
+build/
+tmp/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test and coverage artifacts
+coverage.out
+*.test
+
+# Logs
+*.log
+logs/
+
+# Local env files (keep secrets out of build context)
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docs and local notes
+README.md
+agent-transcripts/
+terminals/
