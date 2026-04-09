@@ -97,6 +97,12 @@ func (h *BookingHandler) ConfirmBooking(c *gin.Context) {
 		return
 	}
 
+	adminCtx := middlewares.GetAdminContext(c)
+	if adminCtx == nil {
+		c.JSON(401, gin.H{"error": "Vui lòng đăng nhập", "code": "UNAUTHORIZED"})
+		return
+	}
+
 	booking, err := h.bookingUsecase.ConfirmBooking(c.Request.Context(), params.ID, body.AdminNote)
 	if err != nil {
 		var appErr *apperrors.AppError
@@ -106,12 +112,6 @@ func (h *BookingHandler) ConfirmBooking(c *gin.Context) {
 		}
 		h.logger.Error("confirm_booking failed", slog.Uint64("id", uint64(params.ID)), slog.Any("error", err))
 		c.JSON(500, gin.H{"error": "Lỗi server, vui lòng thử lại sau"})
-		return
-	}
-
-	adminCtx := middlewares.GetAdminContext(c)
-	if adminCtx == nil {
-		c.JSON(401, gin.H{"error": "Vui lòng đăng nhập", "code": "UNAUTHORIZED"})
 		return
 	}
 

@@ -63,6 +63,7 @@ func (h *BookingHandler) CreateBooking(c *gin.Context) {
 		}
 		h.logger.Error("unhandled booking error", slog.Any("error", err))
 		c.JSON(500, gin.H{"error": "Lỗi server, vui lòng thử lại sau"})
+		return
 	}
 
 	c.JSON(201, gin.H{
@@ -100,6 +101,7 @@ func (h *BookingHandler) LookupBooking(c *gin.Context) {
 		}
 		h.logger.Error("unhandled booking error", slog.Any("error", err))
 		c.JSON(500, gin.H{"error": "Lỗi server, vui lòng thử lại sau"})
+		return
 	}
 
 	c.JSON(200, gin.H{

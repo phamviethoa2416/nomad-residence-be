@@ -14,6 +14,7 @@ type BookingUsecase interface {
 	LookupBooking(ctx context.Context, code, phone string) (*entity.Booking, error)
 	ListBookings(ctx context.Context, f filter.BookingFilter) ([]entity.Booking, int64, error)
 	GetBookingByID(ctx context.Context, id uint) (*entity.Booking, error)
+	GetBookingByCode(ctx context.Context, code string) (*entity.Booking, error)
 	ConfirmBooking(ctx context.Context, id uint, adminNote string) (*entity.Booking, error)
 	CancelBooking(ctx context.Context, id uint, reason string) (*entity.Booking, error)
 	UpdateBookingStatus(ctx context.Context, id uint, status string, adminNote, cancelReason *string) (*entity.Booking, error)

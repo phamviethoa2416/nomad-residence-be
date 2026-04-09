@@ -7,7 +7,6 @@ import (
 	"nomad-residence-be/internal/domain/entity"
 	"nomad-residence-be/internal/domain/filter"
 	"nomad-residence-be/internal/repository/model"
-	apperrors "nomad-residence-be/pkg/errors"
 	"nomad-residence-be/pkg/utils"
 	"time"
 
@@ -89,6 +88,9 @@ func (r *bookingRepository) FindByCode(ctx context.Context, code string) (*entit
 	var m model.Booking
 	err := DB(ctx, r.db).WithContext(ctx).
 		Preload("Room").
+		Preload("Payments", func(db *gorm.DB) *gorm.DB {
+			return db.Order("created_at DESC")
+		}).
 		Where("booking_code = ?", code).
 		First(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -131,45 +133,12 @@ func (r *bookingRepository) FindConfirmedOverlapping(ctx context.Context, roomID
 }
 
 func (r *bookingRepository) Create(ctx context.Context, booking *entity.Booking) error {
-	return DB(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec(`SELECT id FROM rooms WHERE id = ? FOR UPDATE`, booking.RoomID).Error; err != nil {
-			return err
-		}
-
-		now := time.Now()
-		var conflictCount int64
-		err := tx.Model(&model.Booking{}).
-			Where("room_id = ?", booking.RoomID).
-			Where("(status = ? OR (status = ? AND expires_at > ?))",
-				entity.BookingConfirmed, entity.BookingPending, now).
-			Where("checkin_date < ? AND checkout_date > ?", booking.CheckoutDate, booking.CheckinDate).
-			Count(&conflictCount).Error
-		if err != nil {
-			return err
-		}
-		if conflictCount > 0 {
-			return apperrors.ErrRoomNotAvailable
-		}
-
-		var blockedCount int64
-		err = tx.Model(&model.BlockedDate{}).
-			Where("room_id = ?", booking.RoomID).
-			Where("date >= ? AND date < ?", booking.CheckinDate, booking.CheckoutDate).
-			Count(&blockedCount).Error
-		if err != nil {
-			return err
-		}
-		if blockedCount > 0 {
-			return apperrors.ErrRoomNotAvailable
-		}
-
-		m := model.BookingFromDomain(booking)
-		if err := tx.Create(m).Error; err != nil {
-			return err
-		}
-		*booking = *m.ToDomain()
-		return nil
-	})
+	m := model.BookingFromDomain(booking)
+	if err := DB(ctx, r.db).WithContext(ctx).Create(m).Error; err != nil {
+		return err
+	}
+	*booking = *m.ToDomain()
+	return nil
 }
 
 func (r *bookingRepository) Update(ctx context.Context, booking *entity.Booking) error {
@@ -242,13 +211,12 @@ func (r *bookingRepository) LockRoom(ctx context.Context, roomID uint) error {
 }
 
 func (r *bookingRepository) CancelExpiredPending(ctx context.Context) (int64, error) {
+	now := time.Now()
 	result := DB(ctx, r.db).WithContext(ctx).
 		Model(&model.Booking{}).
-		Where("status = ? AND expires_at < ?", entity.BookingPending, time.Now()).
+		Where("status = ? AND expires_at < ?", entity.BookingPending, now).
 		Updates(map[string]interface{}{
-			"status":        entity.BookingCanceled,
-			"canceled_at":   time.Now(),
-			"cancel_reason": "Hết thời gian thanh toán",
+			"status": entity.BookingExpired,
 		})
 	return result.RowsAffected, result.Error
 }

@@ -2,6 +2,8 @@ package usecase
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -13,7 +15,6 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
-	"gorm.io/gorm"
 )
 
 const (
@@ -21,7 +22,6 @@ const (
 )
 
 type BookingUsecase struct {
-	db                  *gorm.DB
 	tx                  port.TransactionManager
 	bookingRepo         port.BookingRepository
 	roomRepo            port.RoomRepository
@@ -33,7 +33,6 @@ type BookingUsecase struct {
 }
 
 func NewBookingUsecase(
-	db *gorm.DB,
 	tx port.TransactionManager,
 	bookingRepo port.BookingRepository,
 	roomRepo port.RoomRepository,
@@ -44,7 +43,6 @@ func NewBookingUsecase(
 	logger *slog.Logger,
 ) *BookingUsecase {
 	return &BookingUsecase{
-		db:                  db,
 		tx:                  tx,
 		bookingRepo:         bookingRepo,
 		roomRepo:            roomRepo,
@@ -195,6 +193,19 @@ func (uc *BookingUsecase) ListBookings(ctx context.Context, f filter.BookingFilt
 
 func (uc *BookingUsecase) GetBookingByID(ctx context.Context, id uint) (*entity.Booking, error) {
 	booking, err := uc.bookingRepo.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if booking == nil {
+		return nil, errors.ErrBookingNotFound
+	}
+
+	uc.normalizeBooking(booking)
+	return booking, nil
+}
+
+func (uc *BookingUsecase) GetBookingByCode(ctx context.Context, code string) (*entity.Booking, error) {
+	booking, err := uc.bookingRepo.FindByCode(ctx, code)
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +385,7 @@ func (uc *BookingUsecase) CancelBooking(ctx context.Context, id uint, reason str
 	}
 
 	if err := uc.notificationService.SendBookingCancellationEmail(ctx, result); err != nil {
-		uc.logger.Error("failed to send booking confirmation email",
+		uc.logger.Error("failed to send booking cancellation email",
 			slog.Uint64("booking_id", uint64(result.ID)),
 			slog.Any("error", err),
 		)
@@ -479,8 +490,20 @@ func (uc *BookingUsecase) CreateManualBooking(
 	if room == nil {
 		return nil, errors.ErrRoomNotFound
 	}
+	// Manual booking allows admin override for inactive rooms.
+	// We only enforce room existence here by design.
+
+	if numGuests > room.MaxGuests {
+		return nil, errors.ErrGuestsExceeded
+	}
 
 	numNights := utils.NightsBetween(checkin, checkout)
+	if numNights < room.MinNights {
+		return nil, errors.ErrMinNights
+	}
+	if numNights > room.MaxNights {
+		return nil, errors.ErrMaxNights
+	}
 
 	breakdown, err := uc.pricingUsecase.CalculatePriceForRoom(ctx, room, checkin, checkout)
 	if err != nil {
@@ -597,5 +620,10 @@ func (uc *BookingUsecase) calculatePaidAmount(ctx context.Context, bookingID uin
 }
 
 func generateBookingCode(now time.Time) string {
-	return fmt.Sprintf("NR%s%04d", now.Format("060102"), now.UnixNano()%10000)
+	randomPart := make([]byte, 4)
+	_, err := rand.Read(randomPart)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("NR%s%s", now.Format("060102"), hex.EncodeToString(randomPart))
 }
