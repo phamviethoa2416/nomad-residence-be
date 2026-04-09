@@ -7,6 +7,7 @@ import (
 	"nomad-residence-be/internal/domain/filter"
 	"nomad-residence-be/internal/repository/model"
 	"nomad-residence-be/pkg/utils"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -21,8 +22,72 @@ func NewRoomRepository(db *gorm.DB) *roomRepository {
 }
 
 func (r *roomRepository) FindAll(ctx context.Context, f filter.RoomFilter) ([]entity.Room, int64, error) {
-	db := DB(ctx, r.db).WithContext(ctx).Model(&model.Room{})
+	db := r.applyRoomFilter(ctx, DB(ctx, r.db).WithContext(ctx).Model(&model.Room{}), f)
 
+	var total int64
+	if err := db.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	page, limit := utils.NormalizePage(f.Page, f.Limit)
+	offset := (page - 1) * limit
+
+	var rooms []model.Room
+	err := db.
+		Preload("Images", func(db *gorm.DB) *gorm.DB {
+			return db.Where("is_primary = ?", true).Limit(1)
+		}).
+		Order("sort_order ASC, id ASC").
+		Offset(offset).Limit(limit).
+		Find(&rooms).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return model.RoomsToDomain(rooms), total, nil
+}
+
+func (r *roomRepository) FindAvailable(
+	ctx context.Context,
+	f filter.RoomFilter,
+	checkin, checkout time.Time,
+) ([]entity.Room, int64, error) {
+	db := r.applyRoomFilter(ctx, DB(ctx, r.db).WithContext(ctx).Model(&model.Room{}), f)
+	db = db.Where(
+		`NOT EXISTS (
+			SELECT 1
+			FROM blocked_dates bd
+			WHERE bd.room_id = rooms.id
+			AND bd.date >= ? AND bd.date < ?
+		)`,
+		checkin,
+		checkout,
+	)
+
+	var total int64
+	if err := db.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	page, limit := utils.NormalizePage(f.Page, f.Limit)
+	offset := (page - 1) * limit
+
+	var rooms []model.Room
+	err := db.
+		Preload("Images", func(db *gorm.DB) *gorm.DB {
+			return db.Where("is_primary = ?", true).Limit(1)
+		}).
+		Order("sort_order ASC, id ASC").
+		Offset(offset).Limit(limit).
+		Find(&rooms).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return model.RoomsToDomain(rooms), total, nil
+}
+
+func (r *roomRepository) applyRoomFilter(ctx context.Context, db *gorm.DB, f filter.RoomFilter) *gorm.DB {
 	if f.Status != "" {
 		db = db.Where("status = ?", f.Status)
 	}
@@ -56,28 +121,7 @@ func (r *roomRepository) FindAll(ctx context.Context, f filter.RoomFilter) ([]en
 			Having("COUNT(DISTINCT amenity_id) = ?", len(f.Amenities))
 		db = db.Where("id IN (?)", amenitySubQuery)
 	}
-
-	var total int64
-	if err := db.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	page, limit := utils.NormalizePage(f.Page, f.Limit)
-	offset := (page - 1) * limit
-
-	var rooms []model.Room
-	err := db.
-		Preload("Images", func(db *gorm.DB) *gorm.DB {
-			return db.Where("is_primary = ?", true).Limit(1)
-		}).
-		Order("sort_order ASC, id ASC").
-		Offset(offset).Limit(limit).
-		Find(&rooms).Error
-	if err != nil {
-		return nil, 0, err
-	}
-
-	return model.RoomsToDomain(rooms), total, nil
+	return db
 }
 
 func (r *roomRepository) FindByID(ctx context.Context, id uint) (*entity.Room, error) {

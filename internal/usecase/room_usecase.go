@@ -202,34 +202,11 @@ func (uc *RoomUsecase) ListAvailableRooms(
 	f filter.RoomFilter,
 	checkin, checkout *time.Time,
 ) ([]entity.Room, int64, error) {
-	rooms, total, err := uc.roomRepo.FindAll(ctx, f)
-	if err != nil {
-		return nil, 0, err
-	}
-
 	if checkin == nil || checkout == nil {
-		return rooms, total, nil
+		return uc.roomRepo.FindAll(ctx, f)
 	}
 
-	unavailableIDs, err := uc.blockedDateRepo.GetUnavailableRoomIDs(ctx, *checkin, *checkout)
-	if err != nil {
-		uc.logger.Error("failed to get unavailable room IDs", slog.Any("error", err))
-		return rooms, total, nil
-	}
-
-	blockedSet := make(map[uint]bool, len(unavailableIDs))
-	for _, id := range unavailableIDs {
-		blockedSet[id] = true
-	}
-
-	available := make([]entity.Room, 0, len(rooms))
-	for _, room := range rooms {
-		if !blockedSet[room.ID] {
-			available = append(available, room)
-		}
-	}
-
-	return available, int64(len(available)), nil
+	return uc.roomRepo.FindAvailable(ctx, f, *checkin, *checkout)
 }
 
 func (uc *RoomUsecase) GetBlockedDates(

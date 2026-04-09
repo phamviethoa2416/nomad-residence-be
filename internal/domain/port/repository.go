@@ -18,6 +18,7 @@ type AdminRepository interface {
 
 type RoomRepository interface {
 	FindAll(ctx context.Context, filter filter.RoomFilter) ([]entity.Room, int64, error)
+	FindAvailable(ctx context.Context, filter filter.RoomFilter, checkin, checkout time.Time) ([]entity.Room, int64, error)
 	FindByID(ctx context.Context, id uint) (*entity.Room, error)
 	FindBySlug(ctx context.Context, slug string) (*entity.Room, error)
 	Create(ctx context.Context, room *entity.Room) error
