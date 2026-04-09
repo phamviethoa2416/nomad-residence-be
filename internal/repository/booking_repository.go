@@ -114,6 +114,21 @@ func (r *bookingRepository) FindByGuestPhone(ctx context.Context, phone string) 
 	return model.BookingsToDomain(bookings), nil
 }
 
+func (r *bookingRepository) FindConfirmedOverlapping(ctx context.Context, roomID uint, minDate, maxDate time.Time) ([]entity.Booking, error) {
+	rangeEndExclusive := maxDate.AddDate(0, 0, 1)
+	var bookings []model.Booking
+	err := DB(ctx, r.db).WithContext(ctx).
+		Where("room_id = ?", roomID).
+		Where("status = ?", entity.BookingConfirmed).
+		Where("checkin_date < ? AND checkout_date > ?", rangeEndExclusive, minDate).
+		Order("checkin_date ASC").
+		Find(&bookings).Error
+	if err != nil {
+		return nil, err
+	}
+	return model.BookingsToDomain(bookings), nil
+}
+
 func (r *bookingRepository) Create(ctx context.Context, booking *entity.Booking) error {
 	return DB(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec(`SELECT id FROM rooms WHERE id = ? FOR UPDATE`, booking.RoomID).Error; err != nil {

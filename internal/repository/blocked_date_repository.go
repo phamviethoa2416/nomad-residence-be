@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"nomad-residence-be/internal/domain/entity"
 	"nomad-residence-be/internal/repository/model"
 	"strings"
@@ -17,6 +18,18 @@ type blockedDateRepository struct {
 
 func NewBlockedDateRepository(db *gorm.DB) *blockedDateRepository {
 	return &blockedDateRepository{db: db}
+}
+
+func (r *blockedDateRepository) FindByID(ctx context.Context, id uint) (*entity.BlockedDate, error) {
+	var m model.BlockedDate
+	err := DB(ctx, r.db).WithContext(ctx).First(&m, id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return m.ToDomain(), nil
 }
 
 func (r *blockedDateRepository) FindByRoomAndRange(ctx context.Context, roomID uint, from, to time.Time) ([]entity.BlockedDate, error) {
