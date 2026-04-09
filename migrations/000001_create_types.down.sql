@@ -1,0 +1,12 @@
+DROP TYPE IF EXISTS modifier_type;
+DROP TYPE IF EXISTS pricing_rule_type;
+DROP TYPE IF EXISTS ical_sync_status;
+DROP TYPE IF EXISTS block_source;
+DROP TYPE IF EXISTS payment_status;
+DROP TYPE IF EXISTS payment_method;
+DROP TYPE IF EXISTS refund_status;
+DROP TYPE IF EXISTS booking_source;
+DROP TYPE IF EXISTS booking_status;
+DROP TYPE IF EXISTS room_status;
+DROP TYPE IF EXISTS room_type;
+DROP TYPE IF EXISTS admin_role;
